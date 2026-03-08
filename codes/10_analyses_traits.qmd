@@ -1,0 +1,763 @@
+---
+title: "10_analyses_traits"
+author: "Carmen Soria"
+format: html
+editor: visual
+---
+
+# SAC and species traits
+
+Here I am going to analyse if different categorical groups have different SAC.
+
+```{r}
+#| label: libraries
+#| message: false
+#| warning: false
+
+
+pacman::p_load(tidyverse, sf, viridis, gridExtra, grid, cowplot, here, broom, rstatix, readxl, ggpubr)
+```
+
+### Directories
+
+```{r}
+#| label: directory-variables
+#| message: false
+#| warning: false
+
+# File with paths
+source(file.path(here(), "codes", "00_config_file.R"))
+```
+
+### Variables
+
+```{r}
+# Palette log ratio quadrants
+quadrant_col <- c("Q1" = "#FEE090","Q2" = "#FC8D59", "Q3" = "#D73027", 
+                  "Q4" = "#87cfc7", "Q5" = "#2e78a0", "Q6" = "#09177e",
+                  "No change" = "#4A4A4A", 
+                  "Pos. Infinite" = "#F0C24E", "Neg. Infinite" = "#B28300",
+                  "Change JC" = "#8A5AC7", "Change OCC" = "#C8A5F0",
+                  "Equal" = "#ff499e")
+
+# Palette atlas regions
+region_col <-  c("Czechia" = "#4477AA", "Europe" = "#EE6677", "New York" = "#228833", "Japan" = "#CCBB44")
+```
+
+### Load data
+
+```{r}
+#| label: load-data
+#| message: false
+#| warning: false
+
+# Trait data
+trait_data <- read_excel(file.path(paths$trait_path, "AVONET", "AVONET Supplementary dataset 1.xlsx"), sheet = 2) # Avonet1_birdlife sheet
+
+# SAC species data
+data_species <- read.csv(file.path(paths$output_path, "sac_species_table.csv")) %>%
+  dplyr::select(-X) %>% 
+  mutate(
+    datasetID = factor(datasetID, 
+                       levels = c("Czechia", "Europe", "New York", "Japan")),
+    cellSide = case_when(
+      datasetID == "Czechia" ~ scalingID * 11, # Cell side = 11 km
+      datasetID == "Europe" ~ scalingID * 50, # Cell side = 50 km
+      datasetID == "New York" ~ scalingID * 5, # Cell side = 5 km
+      datasetID == "Japan" ~ scalingID * 20, # Cell side = 50 km
+      )
+    )
+
+# Data JC and OCC change
+sp_jcocc_data <- read.csv(file.path(paths$output_path, "logratio_jcocc.csv")) %>% 
+  dplyr::select(-X) %>% 
+  mutate(datasetID = factor(datasetID, 
+                       levels = c("Czechia", 
+                                  "Europe", 
+                                  "New York", 
+                                  "Japan")))
+
+
+# Dataset IDs
+datasetIDs <- unique(sp_jcocc_data$datasetID)
+```
+
+## Data preparation
+
+### Trait and BBA taxonomic match
+
+```{r}
+tax_df <- data_species %>% 
+  left_join(trait_data %>% select(Species1, Trophic.Level),
+            by = c("scientificName" = "Species1")) %>% 
+  select(scientificName, Trophic.Level) %>% 
+  mutate(avonetName = ifelse(!is.na(Trophic.Level), scientificName, NA)) %>%
+  select(-Trophic.Level) %>% 
+  unique() %>% 
+  mutate(avonetName = case_when(
+    is.na(avonetName) & word(scientificName, 1) == "Curruca" ~ paste("Sylvia", word(scientificName, 2)),
+    is.na(avonetName) & word(scientificName, 1) == "Helopsaltes" ~  paste("Locustella", word(scientificName, 2)),
+    scientificName == "Tetrastes bonasia" ~ "Bonasa bonasia",
+    scientificName == "Cuculus optatus" ~ "Cuculus saturatus",
+    scientificName == "Luscinia svecica" ~ "Cyanecula svecica",
+    scientificName == "Canachites canadensis" ~ "Falcipennis canadensis",
+    scientificName == "Pterorhinus perspicillatus" ~ "Garrulax perspicillatus",
+    scientificName == "Grus canadensis" ~ "Antigone canadensis",
+    scientificName == "Padda oryzivora" ~ "Lonchura oryzivora",
+    scientificName == "Corthylio calendula" ~ "Regulus calendula",
+    .default = avonetName
+  )) %>% 
+  mutate(avonetName = ifelse(avonetName == "Locustella fasciolatus", "Locustella fasciolata", avonetName))
+```
+
+### JC Difference temporal slopes + traits
+
+Process: filter only to keep rows that belong to the original scale and that have a JCD value. Filter for species that are present in all periods and run a linear regression. Join with traits.
+
+```{r}
+# JCD data
+jcd_data <- data_species %>% 
+  filter(scalingID == 1 & !is.na(jcDifference)) %>% 
+  select(datasetID, startYear, scientificName, jcDifference) %>% 
+  group_by(datasetID, scientificName) %>% 
+  mutate(n_periods = n()) %>% 
+  ungroup() %>% 
+  group_by(datasetID) %>% 
+  filter(n_periods == max(n_periods)) %>% 
+  ungroup() %>% 
+  group_by(datasetID, scientificName) %>% 
+  arrange(startYear, .by_group = TRUE) %>% 
+  group_modify(~ {
+    mod <- lm(jcDifference ~ startYear, data = .x)
+    slope_data <- tidy(mod) %>% filter(term == "startYear")
+    r2_data <- glance(mod) %>% select(r.squared)
+    bind_cols(slope_data, r2_data) 
+  }) %>% 
+  ungroup() %>% 
+  rename(JCD_slope = estimate,
+         se_slope = std.error,
+         r2 = r.squared) %>% 
+  left_join(tax_df, by = "scientificName") %>% 
+  left_join(trait_data %>% 
+            select(Species1, `Hand-Wing.Index`, Trophic.Level, Habitat.Density), 
+            by = c("avonetName" = "Species1")) %>% 
+  mutate(Habitat.Density = as.factor(Habitat.Density),
+         Trophic.Level = as.factor(Trophic.Level)) %>% 
+  rename(habitatDensity = Habitat.Density,
+         handWingIndex = `Hand-Wing.Index`,
+         trophicLevel = Trophic.Level)
+```
+
+### Join log ratio observed JC Statistic with trait data
+
+```{r}
+# Log ratio data
+jcocc_data <- sp_jcocc_data %>% 
+  filter(scalingID == 1) %>% 
+  left_join(tax_df, by = "scientificName") %>% 
+  left_join(trait_data %>% 
+              select(Species1, `Hand-Wing.Index`, Trophic.Level, Habitat.Density), by = c("avonetName" = "Species1")) %>% 
+  mutate(Habitat.Density = as.factor(Habitat.Density),
+         Trophic.Level = as.factor(Trophic.Level)) %>% 
+  rename(habitatDensity = Habitat.Density,
+         handWingIndex = `Hand-Wing.Index`,
+         trophicLevel = Trophic.Level)
+```
+
+### Residuals of logratio JC Statistic respective logratio expJC \~ logratio OCC
+
+```{r}
+resid_lm <- jcocc_data %>% 
+  group_by(datasetID) %>% 
+  group_modify( ~ {
+    noinf <- filter(., is.finite(logratioJCExp) & is.finite(logratioJCStat))
+    lm_exp <- lm(logratioJCExp ~ logratioOcc, data = noinf)
+    mutate(noinf,
+           predJCExp = predict(lm_exp, newdata = noinf),
+           resid_obs_exp = logratioJCStat - predJCExp)
+  }) %>% 
+  ungroup()
+```
+
+## Trait 1: Habitat density
+
+### JCD temporal slopes
+
+-   Statistics
+
+```{r}
+# Check if the distributions of jcd are normal within each group
+habjcd_norm <- jcd_data %>% 
+  group_by(datasetID, habitatDensity) %>% 
+  summarise(shapiro_p = shapiro.test(JCD_slope)$p.value,
+            n = n(), .groups = "drop") %>% 
+  mutate(normal_distr = ifelse(shapiro_p < 0.05, "no", "yes"))
+
+table(habjcd_norm$normal_distr) # Most don't have a normal distribution
+
+# Kruskal-Wallis test per dataset
+kruskal_habjcd <- jcd_data %>%
+  group_by(datasetID) %>%
+  kruskal_test(JCD_slope ~ habitatDensity) %>%
+  ungroup() 
+
+kruskal_habjcd # None of them are significant
+
+
+# Pairwise comparisons (Dunn test)
+pairwise_habjcd <- jcd_data %>%
+  group_by(datasetID) %>%
+  dunn_test(JCD_slope ~ habitatDensity, p.adjust.method = "bonferroni") %>%
+  ungroup()
+pairwise_habjcd # None of them are significant
+```
+
+-   Plot function
+
+```{r}
+plot.ps11 <- function(dataset_name, data) {
+  
+  dataset_df <- data %>% 
+    filter(datasetID == dataset_name)
+  
+  # Count species per habitat × cellSide
+  count_df <- dataset_df %>% 
+    group_by(habitatDensity) %>% 
+    summarise(n_sp = n_distinct(scientificName), .groups = "drop")
+  
+  # One common ypos across all facets
+  ypos <- max(dataset_df$JCD_slope, na.rm = TRUE) * 1.15
+  
+  # Plot
+  ggplot(dataset_df, aes(x = habitatDensity, y = JCD_slope)) +
+    geom_jitter(aes(colour = factor(habitatDensity)), size = 2, alpha = 0.5, 
+                width = 0.15, height = 0) +
+    geom_boxplot(fill = NA, colour = "black", width = 0.5, outlier.shape = NA) +
+    scale_color_viridis_d(name = "Habitat density",
+                          labels = c("Dense", "Semi-open", "Open")) +
+    geom_text(
+      data = count_df,
+      aes(x = habitatDensity, y = ypos, label = paste0("N=", n_sp)),
+      inherit.aes = FALSE, size = 2.5) +
+    ggtitle(dataset_name) +
+    theme_classic() + 
+    scale_x_discrete(labels = c("Dense", "Semi-open", "Open")) +
+    scale_y_continuous(expand = expansion(mult = c(0.05, 0.05))) +
+    theme(
+      legend.position = "right",
+      axis.title.x = element_blank(),
+      axis.text.x = element_blank(), 
+      axis.title.y = element_blank(),
+      axis.text.y = element_text(size = 9),
+      plot.title = element_text(size = 11, face = "bold", hjust = 0.5),
+      axis.ticks.x = element_blank(),
+      plot.margin = margin(t = 10, r = 10, b = 10, l = 20)
+    )
+}
+```
+
+-   Plotting
+
+```{r}
+# Build plots
+ps11_list <- purrr::map(datasetIDs, ~ plot.ps11(.x, jcd_data))
+names(ps11_list) <- datasetIDs
+
+# Get legend
+ps11_legend <- cowplot::get_legend(ps11_list$Czechia + theme(legend.position = "right"))
+
+# Remove legends from plots
+ps11_noleg <- purrr::map(ps11_list, ~ .x + theme(legend.position = "none"))
+
+# Stack plots with one common legend (left)
+ps11_all <- cowplot::plot_grid(
+  cowplot::plot_grid(plotlist = ps11_noleg, ncol = 2),
+  ps11_legend,
+  rel_widths = c(1, 0.245)
+)
+ps11_all <- ggdraw() +
+  draw_plot(ps11_all) +
+  draw_label("JCD slope", x = 0.02, y = 0.5, angle = 90, size = 12, vjust = 1)
+ps11_all
+```
+
+-   Save plots
+
+```{r}
+ggsave(plot = ps11_all, dpi = 600, width = 5.1, height = 6,
+       file.path(paths$figure_path, "ps11_habjcd.png"))
+```
+
+### Residuals jcc occ
+
+-   Statistics
+
+```{r}
+# Check if the distributions of jcd are normal within each group
+habres_norm <- resid_lm %>% 
+  group_by(datasetID, habitatDensity) %>% 
+  summarise(shapiro_p = shapiro.test(resid_obs_exp)$p.value,
+            n = n(), .groups = "drop") %>% 
+  mutate(normal_distr = ifelse(shapiro_p < 0.05, "no", "yes"))
+
+table(habres_norm$normal_distr) # None a normal distribution
+
+# Kruskal-Wallis test per dataset
+kruskal_habres <- resid_lm %>%
+  group_by(datasetID) %>%
+  kruskal_test(resid_obs_exp ~ habitatDensity) %>%
+  ungroup() 
+
+kruskal_habres
+
+# Pairwise comparisons (Dunn test)
+pairwise_habres <- resid_lm %>%
+  group_by(datasetID) %>%
+  dunn_test(resid_obs_exp ~ habitatDensity, p.adjust.method = "bonferroni") %>%
+  ungroup()
+
+pairwise_habres
+```
+
+-   Plots
+
+```{r}
+plot.ps12 <- function(dataset_name, data, response) {
+  dataset_df <- data %>% 
+    filter(datasetID == dataset_name)
+  
+  # Count species per habitat × cellSide
+  count_df <- dataset_df %>% 
+    group_by(habitatDensity) %>% 
+    summarise(n_sp = n_distinct(scientificName), .groups = "drop")
+  
+  # One common ypos across all facets
+  ypos <- max(dataset_df[[response]], na.rm = TRUE) * 1.25
+  
+  ggplot(dataset_df, aes(x = habitatDensity, y = .data[[response]])) +
+    geom_jitter(aes(colour = factor(quadrant)), size = 2, alpha = 0.7, 
+                width = 0.15, height = 0) +
+    geom_boxplot(fill = NA, colour = "black", width = 0.4, outlier.shape = NA) +
+    scale_color_manual(values = quadrant_col, name = "Quadrant") +
+    geom_text(
+      data = count_df,
+      aes(x = habitatDensity, label = paste0("N=", n_sp)),  
+      y = ypos,                                 
+      inherit.aes = FALSE,
+      size = 3
+    ) +
+    ggtitle(dataset_name) +
+    theme_classic() + 
+    scale_x_discrete(labels = c("Dense", "Semi-open", "Open")) +
+    scale_y_continuous(expand = expansion(mult = c(0.05, 0.15))) +
+    theme(
+      legend.position = "right",
+      legend.text = element_text(size = 8),
+      axis.title.x = element_blank(),
+      axis.text.x = element_text(size = 8, margin = margin(t = 2)),
+      axis.title.y = element_blank(),
+      axis.text.y = element_text(size = 8),
+      plot.title = element_text(size = 10, face = "bold", hjust = 0.5),
+      plot.margin = margin(t = 10, r = 10, b = 10, l = 20)
+    )
+}
+```
+
+-   Get plots
+
+```{r}
+# Build plots
+ps12_list <- purrr::map(datasetIDs, ~ plot.ps12(.x, resid_lm, "resid_obs_exp"))
+names(ps12_list) <- datasetIDs
+
+# Extract legend (now it will exist)
+ps12_legend <- cowplot::get_legend(ps12_list$Japan + theme(legend.position = "right"))
+
+# Remove legends from plots
+ps12_nolegend <- purrr::map(ps12_list, ~ .x + theme(legend.position = "none"))
+
+# Stack plots with one common legend on the left
+ps12_all <- cowplot::plot_grid(
+  cowplot::plot_grid(plotlist = ps12_nolegend, ncol = 2),
+  ps12_legend,
+  rel_widths = c(1, 0.24)
+)
+ps12_all <- ggdraw() +
+  draw_plot(ps12_all) +
+  draw_label("residuals JC-OCC", x = 0.02, y = 0.5, angle = 90, size = 12, vjust = 1)
+ps12_all
+```
+
+-   Save plot
+
+```{r}
+ggsave(plot = ps12_all, dpi = 600, width = 5.1, height = 6,
+       file.path(paths$figure_path, "ps12_habres.png"))
+```
+
+## Trait 2: Trophic level
+
+### JCD temporal slopes
+
+-   Statistics
+
+```{r}
+# Check if the distributions of the residuals are normal within each group
+trojcd_norm <- jcd_data %>% 
+  filter(trophicLevel != "Scavenger") %>% # Only 3 in Europe and 1 in NY
+  group_by(datasetID, trophicLevel) %>% 
+  summarise(shapiro_p = shapiro.test(JCD_slope)$p.value,
+            n = n(), .groups = "drop") %>% 
+  mutate(normal_distr = ifelse(shapiro_p < 0.05, "no", "yes"))
+
+table(trojcd_norm$normal_distr) # Some yes, most no
+
+# Perform Kruskal-Wallis test per dataset 
+kruskal_trojcd <- jcd_data %>%
+  group_by(datasetID) %>%
+  kruskal_test(JCD_slope ~ trophicLevel) %>%
+  ungroup() 
+
+kruskal_trojcd # None of them are significant
+
+
+# Pairwise comparisons (Dunn test)
+pairwise_trojcd <- jcd_data %>%
+  group_by(datasetID) %>%
+  dunn_test(JCD_slope ~ trophicLevel, p.adjust.method = "bonferroni") %>%
+  ungroup()
+pairwise_trojcd # None of them are significant
+```
+
+-   Plot function
+
+```{r}
+plot.ps13 <- function(dataset_name, data) {
+  
+  dataset_df <- data %>% 
+    filter(datasetID == dataset_name) %>% 
+    filter(trophicLevel != "Scavenger") 
+  
+  # Count species per trophic level
+  count_df <- dataset_df %>% 
+    group_by(trophicLevel) %>% 
+    summarise(n_sp = n_distinct(scientificName), .groups = "drop")
+  
+  # One common ypos across all facets
+  ypos <- max(dataset_df$JCD_slope, na.rm = TRUE) * 1.25
+  
+  ggplot(dataset_df, aes(x = trophicLevel, y = JCD_slope)) +
+    geom_jitter(aes(colour = factor(trophicLevel)), size = 2, alpha = 0.5, 
+                width = 0.15, height = 0) +
+    geom_boxplot(fill = NA, colour = "black", width = 0.5, outlier.shape = NA) +
+    scale_color_viridis_d(name = "Trophic level",
+                          labels = c("Carnivore", "Herbivore", "Omnivore")) +
+    geom_text(
+      data = count_df,
+      aes(x = trophicLevel, label = paste0("N=", n_sp)),   # only mapped aesthetics
+      y = ypos, inherit.aes = FALSE, size = 2.5) +
+    ggtitle(dataset_name) +
+    theme_classic() + 
+    scale_x_discrete(labels = c("Carnivore", "Herbivore", "Omnivore")) +
+    scale_y_continuous(expand = expansion(mult = c(0.05, 0.05))) +
+    theme(
+      legend.position = "right",
+      axis.title.x = element_blank(),
+      axis.text.x = element_blank(), 
+      axis.title.y = element_blank(),
+      axis.text.y = element_text(size = 9),
+      plot.title = element_text(size = 11, face = "bold", hjust = 0.5),
+      plot.margin = margin(t = 10, r = 10, b = 10, l = 20)
+    )
+}
+```
+
+-   Plotting
+
+```{r}
+# Build plots
+ps13_list <- purrr::map(datasetIDs, ~ plot.ps13(.x, jcd_data))
+names(ps13_list) <- datasetIDs
+
+# Get legend
+ps13_legend <- cowplot::get_legend(ps13_list$Czechia + theme(legend.position = "right"))
+
+# Remove legends from plots
+ps13_noleg <- purrr::map(ps13_list, ~ .x + theme(legend.position = "none"))
+
+# Stack plots with one common legend (left)
+ps13_all <- cowplot::plot_grid(
+  cowplot::plot_grid(plotlist = ps13_noleg, ncol = 2),
+  ps13_legend,
+  rel_widths = c(1, 0.245)
+)
+ps13_all <- ggdraw() +
+  draw_plot(ps13_all) +
+  draw_label("JCD slope", x = 0.02, y = 0.5, angle = 90, size = 12, vjust = 1)
+ps13_all
+```
+
+-   Saving
+
+```{r}
+ggsave(plot = ps13_all, dpi = 600, width = 5.1, height = 6,
+       file.path(paths$figure_path, "ps13_trojcd.png"))
+```
+
+### Residuals jc occ
+
+-   Stats
+
+```{r}
+# Check if the distributions of the residuals are normal within each group
+trores_norm <- resid_lm %>% 
+  filter(trophicLevel != "Scavenger") %>% # Only 3 in Europe and 1 in NY
+  group_by(datasetID, trophicLevel) %>% 
+  summarise(shapiro_p = shapiro.test(resid_obs_exp)$p.value,
+            n = n(), .groups = "drop") %>% 
+  mutate(normal_distr = ifelse(shapiro_p < 0.05, "no", "yes"))
+
+table(trores_norm$normal_distr) # None have a normal distribution
+
+# Perform Kruskal-Wallis test per dataset 
+kruskal_trores <- resid_lm %>%
+  group_by(datasetID) %>%
+  kruskal_test(resid_obs_exp ~ trophicLevel) %>%
+  ungroup() 
+
+kruskal_trores # Japan and Europe significant
+
+
+# Pairwise comparisons (Dunn test)
+pairwise_trores <- resid_lm %>%
+  group_by(datasetID) %>%
+  dunn_test(resid_obs_exp ~ trophicLevel, p.adjust.method = "bonferroni") %>%
+  ungroup()
+pairwise_trores # None of them are significant
+```
+
+-   Plot function
+
+```{r}
+plot.ps14 <- function(dataset_name, data = resid_lm) {
+  dataset_df <- data %>% 
+    filter(datasetID == dataset_name) %>% 
+    filter(trophicLevel != "Scavenger") 
+  
+  # Count species per habitat × cellSide
+  count_df <- dataset_df %>% 
+    group_by(trophicLevel) %>% 
+    summarise(n_sp = n_distinct(scientificName), .groups = "drop")
+  
+  # One common ypos across all facets
+  ypos <- max(dataset_df$resid_obs_exp, na.rm = TRUE) * 1.25
+  
+  ggplot(dataset_df, aes(x = trophicLevel, y = resid_obs_exp)) +
+    geom_jitter(aes(colour = factor(quadrant)), size = 2, alpha = 0.7, 
+                width = 0.15, height = 0) +
+    geom_boxplot(fill = NA, colour = "black", width = 0.5, outlier.shape = NA) +
+    scale_color_manual(values = quadrant_col, name = "Quadrant") +
+    geom_text(
+      data = count_df,
+      aes(x = trophicLevel, label = paste0("N=", n_sp)),   
+      y = ypos,                                 
+      inherit.aes = FALSE,
+      size = 3
+    ) +
+    ggtitle(dataset_name) +
+    theme_classic() + 
+    scale_x_discrete(labels = c("Carn.", "Herb.", "Omn.")) +
+    scale_y_continuous(expand = expansion(mult = c(0.05, 0.15))) +
+    theme(
+      legend.position = "right",
+      legend.text = element_text(size = 8),
+      axis.title.x = element_blank(),
+      axis.text.x = element_text(size = 8, margin = margin(t = 2)),
+      axis.title.y = element_blank(),
+      axis.text.y = element_text(size = 8),
+      plot.title = element_text(size = 10, face = "bold", hjust = 0.5),
+      plot.margin = margin(t = 10, r = 10, b = 10, l = 20)
+    )
+}
+```
+
+-   Plots
+
+```{r}
+# Build plots
+ps14_list <- purrr::map(datasetIDs, ~ plot.ps14(.x, resid_lm))
+names(ps14_list) <- datasetIDs
+
+# Extract legend (now it will exist)
+ps14_legend <- cowplot::get_legend(ps14_list$Japan + theme(legend.position = "right"))
+
+# Remove legends from plots
+ps14_nolegend <- purrr::map(ps14_list, ~ .x + theme(legend.position = "none"))
+
+# Stack plots with one common legend on the left
+ps14_all <- cowplot::plot_grid(
+  cowplot::plot_grid(plotlist = ps14_nolegend, ncol = 2),
+  ps14_legend,
+  rel_widths = c(1, 0.3)
+)
+ps14_all <- ggdraw() +
+  draw_plot(ps14_all) +
+  draw_label("residuals JC-OCC", x = 0.02, y = 0.5, angle = 90, size = 12, vjust = 1)
+ps14_all
+```
+
+-   Saving plot
+
+```{r}
+ggsave(plot = ps14_all, dpi = 600, width = 5.1, height = 6,
+       file.path(paths$figure_path, "ps14_trores.png"))
+```
+
+## Trait 3: Hand wing index
+
+### JCD temporal slopes
+
+-   Statistics: linear models
+
+```{r}
+# Linear regression
+hwijcd_lm <- jcd_data %>% 
+  group_by(datasetID) %>% 
+  group_modify( ~ {
+    lm_hwi <- lm(JCD_slope ~ handWingIndex, data = .)
+    slope_data <- tidy(lm_hwi) %>% filter(term == "handWingIndex")
+    r2_data <- glance(lm_hwi) %>% select(r.squared)
+    bind_cols(slope_data, r2_data) %>%
+      mutate(n_replicates = nrow(.x))
+  }) %>% 
+  ungroup()
+
+hwijcd_lm
+```
+
+-   Plot function
+
+```{r}
+plot.ps15 <- function(dataset_name, data = jcd_data) {
+  
+  dataset_df <- data %>% 
+    filter(datasetID == dataset_name)
+  
+  # Count species per habitat
+  count_df <- dataset_df %>% 
+    group_by(handWingIndex) %>% 
+    summarise(n_sp = n_distinct(scientificName), .groups = "drop")
+  
+  ggplot(dataset_df, aes(x = handWingIndex, y = JCD_slope)) +
+    geom_point(color = region_col[[dataset_name]], size = 2, alpha = 0.7) +
+    geom_smooth(method = "lm", se = FALSE, colour = "black", size = 0.5) +
+    ggtitle(dataset_name) +
+    theme_classic() + 
+    scale_y_continuous(expand = expansion(mult = c(0.05, 0.15))) +
+    theme(
+      plot.margin = margin(t = 10, r = 10, b = 20, l = 20),
+      legend.position = "none",
+      axis.title.x = element_blank(),
+      axis.text.x = element_text(size = 9, margin = margin(t = 2)),
+      axis.title.y = element_blank(),
+      axis.text.y = element_text(size = 9),
+      plot.title = element_text(size = 11, face = "bold", hjust = 0.5)
+    )
+}
+```
+
+-   Plotting
+
+```{r}
+# Build plots
+ps15_list <- purrr::map(datasetIDs, ~ plot.ps15(.x, jcd_data))
+names(ps15_list) <- datasetIDs
+
+ps15_all <- cowplot::plot_grid(plotlist = ps15_list, ncol = 2)
+ps15_all <- ggdraw() +
+  draw_plot(ps15_all) +
+  draw_label("Hand-wing Index", x = 0.5, y = 0.025, size = 12, vjust = 0) +
+  draw_label("JCD slope", x = 0.02, y = 0.5, angle = 90, size = 12, vjust = 1)
+ps15_all
+```
+
+-   Saving
+
+```{r}
+ggsave(plot = ps15_all, dpi = 600, width = 5.1, height = 6,
+       file.path(paths$figure_path, "ps15_hwijcd.png"))
+```
+
+### Residuals jc occ
+
+-   Statistic
+
+```{r}
+# Linear regression
+hwires_lm <- resid_lm %>% 
+  group_by(datasetID) %>% 
+  group_modify( ~ {
+    lm_hwi <- lm(resid_obs_exp ~ handWingIndex, data = .)
+    slope_data <- tidy(lm_hwi) %>% filter(term == "handWingIndex")
+    r2_data <- glance(lm_hwi) %>% select(r.squared)
+    bind_cols(slope_data, r2_data) %>%
+      mutate(n_replicates = nrow(.x))
+  }) %>% 
+  ungroup()
+```
+
+-   Plot function
+
+```{r}
+plot.ps16 <- function(dataset_name, data = resid_lm) {
+  
+  dataset_df <- data %>% 
+    filter(datasetID == dataset_name)
+  
+  # Count species per habitat
+  count_df <- dataset_df %>% 
+    group_by(handWingIndex) %>% 
+    summarise(n_sp = n_distinct(scientificName), .groups = "drop")
+  
+  ggplot(dataset_df, aes(x = handWingIndex, y = resid_obs_exp)) +
+    geom_point(aes(colour = factor(quadrant)), size = 2, alpha = 0.7) +
+    geom_smooth(method = "lm", se = FALSE, colour = "black", size = 0.5) +
+    scale_color_manual(values = quadrant_col, name = "Quadrant") +
+    ggtitle(dataset_name) +
+    theme_classic() + 
+    scale_y_continuous(expand = expansion(mult = c(0.05, 0.15))) +
+    theme(
+      legend.position = "none",
+      axis.title.x = element_blank(),
+      axis.text.x = element_text(size = 9, margin = margin(t = 2)), 
+      axis.title.y = element_blank(),
+      axis.text.y = element_text(size = 9),
+      plot.title = element_text(size = 11, face = "bold", hjust = 0.5),
+      plot.margin = margin(t = 10, r = 10, b = 20, l = 20)
+    )
+}
+```
+
+-   Plots
+
+```{r}
+# Plots
+ps16_list  <- purrr::map(datasetIDs, plot.ps16)
+
+# Naming them
+ps16_list <- setNames(ps16_list, datasetIDs)
+
+ps16_all <- cowplot::plot_grid(plotlist = ps16_list, ncol = 2)
+ps16_all <- ggdraw() +
+  draw_plot(ps16_all) +
+  draw_label("Hand-wing Index", x = 0.5, y = 0.025, size = 12, vjust = 0) +
+  draw_label("residuals JC-OCC", x = 0.02, y = 0.5, angle = 90, size = 12, vjust = 1)
+ps16_all
+```
+
+-   Save plot
+
+```{r}
+ggsave(plot = ps16_all, dpi = 600, width = 5.1, height = 6,
+       file.path(paths$figure_path, "ps16_hwires.png"))
+```

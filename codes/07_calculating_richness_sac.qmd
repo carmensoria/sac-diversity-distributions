@@ -1,0 +1,140 @@
+---
+title: "07_richness_sac"
+author: "Carmen Soria"
+format: html
+editor: visual
+---
+
+# Calculating richness autocorrelation
+
+### Libraries
+
+```{r}
+#| label: libraries
+#| message: false
+#| warning: false
+
+pacman::p_load(tidyverse, sf, spdep, tictoc)
+```
+
+### Directories
+
+```{r}
+#| label: directory-variables
+#| message: false
+#| warning: false
+
+# File with paths
+source(file.path(here(), "codes", "00_config_file.R"))
+```
+
+### Load data
+
+```{r}
+#| label: load-data
+#| message: false
+#| warning: false
+
+data_tbl <- readRDS(file.path(paths$output_path, "richness_sf.rds"))
+```
+
+## Richness SAC
+
+Calculating global SAC metrics for richness for each combination of area of study, time period and grain size. We are calculating Global Moran's I using a Queen neighbouring scheme (all immediately adjacent cells) and a row standardised weighting scheme (W).
+
+### Functions
+
+```{r}
+#| label: function-richness-sac
+#| message: false
+#| warning: false
+
+
+calc.gsac.rich <- function(richness_sf, moran_style = "W") {
+  # Assigning an NA in case SAC can't be calculated
+  moran_q <- NA
+  
+  # Create queen contiguity neighbourhoods
+  nb_q <- poly2nb(richness_sf, queen = TRUE)
+  
+  ## Moran's I (queen)
+  tryCatch({
+    moran_q <- moran.test(richness_sf$richness,
+                          nb2listw(nb_q, style = moran_style, 
+                                   zero.policy = TRUE))
+  }, error = function (e) {
+    moran_q <- NA
+  })
+  
+  ## Extract metrics into a dataframe
+  result_df <- data.frame(
+    moransI = if(is.list(moran_q)) moran_q$estimate[1] else NA,
+    moransIPval = if(is.list(moran_q)) moran_q$p.value else NA
+
+  )
+}
+```
+
+### Calculation
+
+```{r}
+#| label: calculation-sac-richness
+#| message: false
+#| warning: false
+
+
+sf_use_s2(FALSE)
+
+tic()
+sac_rich_tbl <- data_tbl %>%
+  group_by(datasetID, scalingID, startYear, endYear, samplingPeriodID) %>% 
+  group_map(~ {
+    # Group info, to add to the output table
+    group_keys <- list(
+      datasetID = .y$datasetID,
+      samplingPeriodID = .y$samplingPeriodID,
+      startYear = .y$startYear,
+      endYear = .y$endYear,
+      scalingID = .y$scalingID
+    )
+    
+    group_data <- .x
+    
+    calc.gsac.rich(group_data) %>% 
+      bind_cols(as.data.frame(group_keys))
+    
+  }) %>% 
+  bind_rows()
+toc()
+
+# Removing rownames
+rownames(sac_rich_tbl) <- NULL
+
+# Reordering columns
+sac_rich_tbl <- sac_rich_tbl %>% 
+  select(datasetID, startYear, endYear, samplingPeriodID, scalingID, moransI, moransIPval)
+```
+
+-   Mean and standard deviation of richness SAC
+
+```{r}
+#| label: summary-statistics-sac
+#| message: false
+#| warning: false
+
+# Mean Richness SAC
+print(paste("Mean richness SAC = ", round(mean(sac_rich_tbl$moransI), 3)))
+
+# Standard deviation
+print(paste("Standard deviation SAC = ", round(sd(sac_rich_tbl$moransI), 3)))
+```
+
+-   Saving
+
+```{r}
+#| label: save-richness-sac
+#| message: false
+#| warning: false
+
+write.csv(sac_rich_tbl, file.path(paths$output_path, "sac_richness_table.csv"))
+```

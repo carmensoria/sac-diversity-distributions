@@ -1,0 +1,213 @@
+---
+title: "03_data_preparation"
+author: "Carmen Soria"
+format: html
+editor: visual
+---
+
+# Data preparation for SAC calculation
+
+Preparation of the BBA data for the calculation of Spatial Autocorrelation
+
+### Libraries
+
+```{r}
+#| label: libraries
+#| message: false
+#| warning: false
+
+pacman::p_load(tidyverse, here)
+```
+
+### Directory variables
+
+```{r}
+#| label: directory-variables
+#| message: false
+#| warning: false
+
+# File with paths
+source(file.path(here(), "codes", "00_config_file.R"))
+```
+
+### Loading data
+
+```{r}
+#| label: load-data
+#| message: false
+#| warning: false
+
+data_tbl <- readRDS(file.path(paths$input_path, "species_data.rds"))
+```
+
+## Data processing
+
+### Excluding Japan BBA3, changing datasetID name, converting to factors and ordering
+
+The third Japanese BBA has a way higher survey effort than the first two. This is evidenced by the addition of 147 novel species that were not in the previous atlases. To ensure compatibility between BBAs we have decided to not consider this atlas replication.
+
+Here we also change the datasetID to region name, convert ID, scale and sampling period to an ordered factor and remove recordFilter (no longer relevant).
+
+```{r}
+#| label: data-formatting
+#| message: false
+#| warning: false
+
+
+data_tbl1 <- data_tbl %>% 
+  filter(!(datasetID == 13 & samplingPeriodID == 3)) %>% 
+  mutate(
+    datasetID = factor(case_when(
+      datasetID == 5 ~ "Czechia",
+      datasetID == 26 ~ "Europe",
+      datasetID == 6 ~ "New York",
+      datasetID == 13 ~ "Japan"
+    ), levels = c("Czechia", "Europe", "New York", "Japan"))
+  ) %>% 
+  mutate(across(c(scalingID, samplingPeriodID), as.factor)) %>% 
+  select(-recordFilter)
+```
+
+### Species
+
+Identifying and removing observations of hybrid species
+
+```{r}
+#| label: removing-hybrids
+#| message: false
+#| warning: false
+
+
+# Which species are hybrid and where?
+data_tbl1 %>% 
+  st_drop_geometry() %>% 
+  select(datasetID, scientificName, taxonRank) %>% 
+  filter(taxonRank == "hybrid") %>% 
+  distinct()
+
+
+ # Dropping hybrids
+data_tbl2 <- data_tbl1 %>% 
+  filter(taxonRank != "hybrid") %>% 
+  select(-taxonRank)
+```
+
+Identifying species that have a different verbatim and scientific name (scientific name follows the HBW/BL v9.1 taxonomy)
+
+```{r}
+#| label: nonmatching-names
+#| message: false
+#| warning: false
+
+
+# Table with species for which the verbatim name and the BL2024 taxonomy do not match
+data_tbl_sp <- data_tbl2 %>% 
+  select(verbatimIdentification, scientificName) %>% 
+  filter(verbatimIdentification != scientificName) %>% 
+  distinct()
+
+# How many cases?
+nrow(data_tbl_sp)
+
+# Save mismatch table
+write.csv(data_tbl_sp, file.path(paths$output_path, "mismatch_taxonomy.csv"))
+```
+
+Keeping only HBW/BL v9.1 taxonomy and removing subspecies (i.e., duplicate rows).
+
+```{r}
+#| label: scientific-names-filter
+#| message: false
+#| warning: false
+
+
+data_tbl3 <- data_tbl2 %>% 
+  select(-verbatimIdentification) %>% 
+  distinct()
+```
+
+### Grids
+
+#### Cells sampled in all periods
+
+Identifying cells that have been surveyed in all sampling periods for each dataset
+
+```{r}
+#| label: identify-cells-sampled-all-periods
+#| message: false
+#| warning: false
+
+cells_samp_tbl <- data_tbl3 %>% 
+  select(datasetID, scalingID, siteID, samplingPeriodID) %>% 
+  group_by(datasetID, scalingID, siteID) %>% 
+  mutate(nRepetitions = n_distinct(samplingPeriodID)) %>% 
+  group_by(datasetID, scalingID) %>% 
+  filter(nRepetitions == max(as.numeric(samplingPeriodID))) %>% 
+  distinct()
+
+# Double check. Czechia has 3 replications and Europe, Japan and New York have 2
+cells_samp_tbl %>%
+  select(-samplingPeriodID) %>% 
+  group_by(datasetID) %>% 
+  distinct(nRepetitions)
+```
+
+Filtering the data to keep only those cells
+
+```{r}
+#| label: filter-cells-sampled-all-periods
+#| message: false
+#| warning: false
+
+data_tbl4 <- data_tbl3 %>% 
+  right_join(cells_samp_tbl) %>% 
+  select(-nRepetitions)
+```
+
+#### Spatial scales with at least 30 cells
+
+Identifying sampling scales with 30 cells or more
+
+```{r}
+#| label: scales-over-30-cells
+#| message: false
+#| warning: false
+
+scales_over30_tbl <- data_tbl4 %>% 
+  select(datasetID, scalingID, siteID) %>% 
+  distinct() %>% 
+  group_by(datasetID, scalingID) %>% 
+  mutate(nCells = n_distinct(siteID)) %>% 
+  select(-siteID) %>% 
+  distinct() %>% 
+  filter(nCells >= 30)
+```
+
+Filtering the data to keep only those spatial scales
+
+```{r}
+#| label: filter-scales
+#| message: false
+#| warning: false
+
+data_tbl5 <- data_tbl4 %>% 
+  right_join(scales_over30_tbl) %>% 
+  arrange(datasetID, samplingPeriodID, scalingID) %>% 
+  select(-nCells)
+
+# Which scales are we keeping?
+data_tbl5 %>% 
+  select(datasetID, scalingID) %>% 
+  arrange(datasetID, scalingID) %>% 
+  distinct()
+```
+
+### Saving
+
+```{r}
+#| label: save-output
+#| message: false
+#| warning: false
+
+saveRDS(data_tbl5, file.path(paths$output_path, "species_filtered.rds"))
+```

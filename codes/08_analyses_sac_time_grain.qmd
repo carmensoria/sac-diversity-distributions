@@ -1,0 +1,1080 @@
+---
+title: "08_analyses_sac_time_grain"
+author: "Carmen Soria"
+format: html
+editor: visual
+---
+
+# SAC across time and grains
+
+### Libraries
+
+```{r}
+#| label: libraries
+#| message: false
+#| warning: false
+
+pacman::p_load(tidyverse, sf, viridis, gridExtra, grid, here, broom, rstatix)
+```
+
+### Directories
+
+```{r}
+#| label: directory-variables
+#| message: false
+#| warning: false
+
+# File with paths
+source(file.path(here(), "codes", "00_config_file.R"))
+```
+
+### Variables
+
+```{r}
+#| label: variables
+#| message: false
+#| warning: false
+
+
+## Color palettes
+# Palette atlas regions
+region_col <-  c('#4477AA', '#EE6677', '#228833', '#CCBB44')
+```
+
+### Load data
+
+```{r}
+#| label: load-data
+#| message: false
+#| warning: false
+
+# Richness
+data_richness <- read.csv(file.path(paths$output_path, "sac_richness_table.csv")) %>% 
+  dplyr::select(-X) %>% 
+  mutate(cellSide = case_when(
+    datasetID == "Czechia" ~ scalingID * 11, # Cell side = 11 km
+    datasetID == "Europe" ~ scalingID * 50, # Cell side = 50 km
+    datasetID == "New York" ~ scalingID * 5, # Cell side = 5 km
+    datasetID == "Japan" ~ scalingID * 20, # Cell side = 50 km
+  ))
+
+# Species
+data_species <- read.csv(file.path(paths$output_path, "sac_species_table.csv")) %>%
+  dplyr::select(-X) %>% 
+  mutate(cellSide = case_when(
+    datasetID == "Czechia" ~ scalingID * 11, # Cell side = 11 km
+    datasetID == "Europe" ~ scalingID * 50, # Cell side = 50 km
+    datasetID == "New York" ~ scalingID * 5, # Cell side = 5 km
+    datasetID == "Japan" ~ scalingID * 20, # Cell side = 50 km
+  ))
+
+# Dataset IDs (same for richness and species)
+datasetIDs <- unique(data_richness$datasetID)
+
+# Grid attributes (for the sensitivity test using real average cell side length)
+grid_attr <- read.csv(file.path(paths$output_path, "grid_attributes_tbl.csv"))
+```
+
+## 1. How autocorrelated are richness and species distributions?
+
+### Species richness
+
+Which combinations of study area, sampling period, and spatial grain have significantly autocorrelated richness?
+
+```{r}
+#| label: richness-significant-sac
+#| message: false
+#| warning: false
+
+rich_significance_tbl <- data_richness %>% 
+  dplyr::select(datasetID, startYear, endYear, samplingPeriodID, scalingID, cellSide, moransI, moransIPval) %>% 
+  mutate(
+    period = paste(startYear, endYear, sep = "-"),
+    moransI = round(moransI, 3),
+    moransIPval = ifelse(moransIPval < 0.01, "<0.01", 
+                         as.character(round(moransIPval, 3))))
+
+# Mean SAC per region
+rich_significance_tbl %>% 
+  group_by(datasetID) %>% 
+  summarise(mean_moransI = mean(moransI),
+            sd_moransI = sd(moransI))
+```
+
+-   Saving
+
+```{r}
+#| label: save-richness-significant-sac
+#| message: false
+#| warning: false
+
+# Saving
+write.csv(rich_significance_tbl, file.path(paths$output_path, "richness_sac_pval.csv"))
+```
+
+### Species distributions
+
+How many species have significantly autocorrelated distributions?
+
+The number of species for which we can calculate the join count data will vary between study areas, time periods and grain sizes due to: (a) number of sampled species, (b) number of sampled species for which we can calculate SAC, and (c) the inclusion of cells that were not considered at the smaller grain size.
+
+SAC cannot be calculated for species in all grid cells, we need both presences and absences.
+
+```{r}
+#| label: distribution-significant-sac
+#| message: false
+#| warning: false
+
+
+# How many species with significant positive and negative SAC? 
+species_significance_tbl <- data_species %>% 
+  dplyr::select(datasetID, scientificName, samplingPeriodID, scalingID, cellSide,jcZScore, jcPval, jcDifference) %>% 
+  group_by(datasetID, samplingPeriodID, scalingID) %>%
+  summarise(totalSpecies = n_distinct(scientificName),
+            speciesSAC = n_distinct(scientificName[!is.na(jcPval)]),
+            percSpeciesSAC = round((speciesSAC/totalSpecies) * 100, 2),
+            speciesSignificantPosSAC = n_distinct(scientificName[jcZScore >= 1.96 & 
+                                                                !is.na(jcPval)]),
+            speciesSignificantNegSAC = n_distinct(scientificName[jcZScore <= -1.96 & 
+                                                                !is.na(jcPval)]),
+            percSpeciesSignificantPosSAC = round((speciesSignificantPosSAC / 
+                                                 speciesSAC) * 100, 2),
+            percSpeciesSignificantNegSAC = round((speciesSignificantNegSAC / 
+                                                 speciesSAC) * 100, 2)
+            )
+
+# Mean per region
+species_significance_tbl %>% 
+  group_by(datasetID) %>% 
+  summarise(mean = mean(percSpeciesSignificantPosSAC),
+            sd = sd(percSpeciesSAC))
+```
+
+-   Saving
+
+```{r}
+#| label: save-species-significant-sac
+#| message: false
+#| warning: false
+
+# Saving
+write.csv(species_significance_tbl, file.path(paths$output_path, "species_sac_pval.csv"))
+```
+
+-   Overall mean and median % of species with significant positive SAC
+
+```{r}
+#| label: mean-species-significant-sac
+#| message: false
+#| warning: false
+
+# Mean
+paste("mean", round(mean(species_significance_tbl$percSpeciesSignificantPosSAC, 
+                         na.rm = T), 2))
+
+# SD
+paste("sd", round(sd(species_significance_tbl$percSpeciesSignificantPosSAC, 
+                         na.rm = T), 2))
+
+# Median
+paste("median", round(median(species_significance_tbl$percSpeciesSignificantPosSAC, 
+                             na.rm = T), 2))
+```
+
+## 2: Empirical change of SAC over time
+
+Analyzing how SAC changes across time for diversity (species richness) and distributions (species distributions) divided by grain. For species, we also test whether differences in SAC between periods are significant.
+
+### Species richness
+
+#### Temporal trend plot
+
+-   Function for plots (Figure 4a)
+
+```{r}
+#| label: function-richness-sac-time-plot
+#| message: false
+#| warning: false
+
+# Plot function
+create.p4rich <- function(dataset_name, data = data_richness) {
+  
+  change_sac_rich_df <- data %>% 
+    filter(datasetID == dataset_name & !is.na(moransI)) %>% 
+    mutate(significanceFill = moransIPval < 0.05)
+  
+  scaling_levels <- n_distinct(change_sac_rich_df$cellSide)
+  
+  p4_rich <- ggplot(data = change_sac_rich_df,
+                    aes(x = startYear, y = moransI,
+                        color = as.factor(cellSide),
+                        fill = as.factor(ifelse(significanceFill, cellSide, NA)),
+                        group = as.factor(cellSide))) +
+    geom_hline(yintercept = 0, colour = "red", linetype = "dashed") +
+    geom_line(linewidth = 0.75) +
+    geom_point(size = 2, shape = 21) +
+    scale_color_viridis_d(name = "Cell size") +
+    scale_x_continuous(breaks = unique(change_sac_rich_df$startYear)) +
+    scale_y_continuous(limits = c(-0.3, 0.9), breaks = seq(-0.3, 0.9, by = 0.3)) +
+    scale_fill_manual(values = viridis(scaling_levels), 
+                      name = "p-value", na.value = "grey50") +
+    labs(x = "Start year", y = "Moran's I") +
+    theme_classic() +
+    theme(legend.position = "none",
+          axis.title.x = element_text(size = 10),
+          axis.text.x = element_text(size = 9, angle = 45, vjust = 1, hjust = 1),
+          axis.title.y = element_text(size = 10),
+          axis.text.y = element_text(size = 9))
+  
+  return(p4_rich)
+}
+```
+
+-   Obtaining plots
+
+```{r}
+#| label: richness-sac-time-plot
+#| message: false
+#| warning: false
+
+# Plots
+time_p4rich_list <- purrr::map(datasetIDs, create.p4rich)
+# Naming them
+time_p4rich_list <- setNames(time_p4rich_list , datasetIDs)
+```
+
+### Species distributions
+
+-   Filtering to keep only species that are in all time periods
+
+```{r}
+#| label: temporal-filter-species
+#| message: false
+#| warning: false
+
+sp_all_periods_df <- data_species %>%
+  filter(!is.na(jcDifference)) %>%
+  group_by(datasetID, cellSide, scientificName) %>%
+  mutate(n_periods = n()) %>%
+  ungroup() %>%
+  group_by(datasetID) %>%
+  filter(n_periods == max(n_periods)) %>% 
+  ungroup()
+```
+
+#### Count of increasing, decreasing and no change in SAC
+
+How many species are increasing, decreasing and showing no change in SAC over time?
+
+```{r}
+#| label: n-species-increasing-decreasing-nochange
+#| message: false
+#| warning: false
+
+sp_time_count_df <- sp_all_periods_df %>% 
+  group_by(datasetID, cellSide, scientificName) %>%
+  summarise(
+    firstJCD = jcDifference[which.min(samplingPeriodID)],
+    lastJCD  = jcDifference[which.max(samplingPeriodID)],
+    .groups = "drop"
+  ) %>%
+  mutate(changeDirection = case_when(
+    firstJCD > lastJCD ~ "decrease",
+    firstJCD < lastJCD ~ "increase",
+    TRUE               ~ "nochange"
+  )) %>%
+  group_by(datasetID, cellSide, changeDirection) %>%
+  summarise(count = n(), .groups = "drop") %>% 
+  pivot_wider(names_from = changeDirection, values_from = count, values_fill = 0) %>% 
+  rowwise() %>% 
+  mutate(n_species = sum(decrease + increase + nochange))
+
+# overall percentage of species increasing over time
+paste0("temporal increase: ", round(sum(sp_time_count_df$increase) / sum(sp_time_count_df$n_species) * 100, 2), "% of species")
+
+# overall percentage of species decreasing over time
+paste0("temporal decrease: ", round(sum(sp_time_count_df$decrease) / sum(sp_time_count_df$n_species) * 100, 2), "% of species")
+
+# overall percentage of species no changing
+paste0("temporal no change: ", round(sum(sp_time_count_df$nochange) / sum(sp_time_count_df$n_species) * 100, 2), "% of species")
+```
+
+-   Save
+
+```{r}
+#| label: save-nspecies-changes
+#| message: false
+#| warning: false
+
+write.csv(sp_time_count_df, file.path(paths$output_path, "count_time_sac_sp.csv"))
+```
+
+#### Species-level temporal SAC slopes
+
+-   Linear model per dataset x cell size x species
+
+```{r}
+#| label: species-temporal-slopes
+#| message: false
+#| warning: false
+
+sp_time_slopes_df <- sp_all_periods_df %>% 
+  group_by(datasetID, cellSide, scientificName) %>% 
+  arrange(startYear, .by_group = TRUE) %>% 
+  group_modify(~ {
+    mod <- lm(jcDifference ~ startYear, data = .x)
+    slope_data <- tidy(mod) %>% filter(term == "startYear")
+    r2_data <- glance(mod) %>% select(r.squared)
+    bind_cols(slope_data, r2_data) %>%
+      mutate(n_replicates = nrow(.x))
+  }) %>% 
+  ungroup() %>% 
+  rename(
+    slope = estimate,
+    se_slope = std.error,
+    r2 = r.squared
+  )
+```
+
+-   Percentage of species with significant slopes in Czechia
+
+```{r}
+#| label: species-significant-temporal-cz
+#| message: false
+#| warning: false
+
+sp_time_slopes_df %>% 
+  filter(datasetID == "Czechia") %>% 
+  group_by(cellSide) %>% 
+  summarise(n_signif = sum(p.value <= 0.05) / n_distinct(scientificName))
+```
+
+-   Mean slopes and standard deviations per region and time
+
+```{r}
+#| label: mean-temporal-slopes-tbl
+#| message: false
+#| warning: false
+
+slopes_time_df <- sp_time_slopes_df %>% 
+  group_by(datasetID, cellSide) %>% 
+  summarise(mean_slope = mean(slope, na.rm = T),
+            max_slope = max(slope, na.rm = T),
+            min_slope = min(slope, na.rm = T),
+            se_slope = sd(slope, na.rm = T),
+            mean_r2 = mean(r2))
+```
+
+-   Plot mean slopes
+
+```{r}
+#| label: mean-temporal-slopes-plot
+#| message: false
+#| warning: false
+
+ps1_slopes <- ggplot(data = slopes_time_df, 
+                      aes(x = cellSide, y = mean_slope, 
+                          color = datasetID, group = datasetID)) + 
+  geom_line(size = 1) +
+  geom_point(size = 1.5) +
+  geom_hline(yintercept = 0, colour = "red", linetype = "dashed") +
+  scale_x_log10() +
+  ylim(-0.015, 0.015) +
+  scale_color_manual(values = region_col, name = "Dataset") +
+  labs(x = "Grid resolution (km)", y = "JCD trend") +
+  theme_classic() +
+  theme(legend.title = element_blank(),
+        legend.text = element_text(size = 12),
+        legend.position.inside = c(0.93, 0.9),
+        legend.spacing.y = unit(0.1, "cm"),
+        legend.key.size = unit(0.2, "cm"),
+        legend.margin = margin(0, 0, 0, 0),
+        plot.margin = margin(t = 5, r = 15, b = 5, l = 5),
+        axis.title.x = element_text(size = 12),
+        axis.text.x = element_text(size = 10),
+        axis.title.y = element_text(size = 12),
+        axis.text.y = element_text(size = 10))
+
+plot(ps1_slopes)
+```
+
+-   Save individual and mean slopes
+
+```{r}
+#| label: save-temporal-slopes
+#| message: false
+#| warning: false
+
+# Slope species df (all)
+write.csv(sp_time_slopes_df, file.path(paths$output_path, "slopes_time_sac_sp_all.csv"))
+
+# Slope species df (mean)
+write.csv(slopes_time_df, file.path(paths$output_path, "slopes_time_sac_sp_mean.csv"))
+
+# Plot
+ggsave(plot = ps1_slopes, width = 5, height = 6, dpi = 300, 
+       file.path(paths$figure_path,
+                 "ps1_sac_time.png"))
+```
+
+#### Temporal trends plot
+
+-   Function temporal trend plot (Figure 4b)
+
+```{r}
+#| label: function-sp-sac-time-plot
+#| message: false
+#| warning: false
+
+# Temporal trend plot
+create.p4sp <- function(dataset_name, slopes = sp_time_slopes_df, data = sp_all_periods_df) {
+  
+  # Filter dataset
+  dataset_df <- data %>% 
+    filter(datasetID == dataset_name)
+  
+  # Years info
+  year_range <- sort(unique(dataset_df$startYear))
+  year0 <- min(year_range)
+  
+  # Scale info
+  scaling_levels <- n_distinct(dataset_df$cellSide)
+  
+  # Species level intercepts (initial jcd)
+  sp_start <- dataset_df %>% 
+    dplyr::select(cellSide, scientificName, startYear, jcDifference) %>% 
+    group_by(cellSide, scientificName) %>% 
+    mutate(firstJCD = jcDifference[which.min(startYear)]) %>% 
+    dplyr::select(-startYear, -jcDifference) %>% 
+    unique()
+  
+  # Add to slopes to get regression lines
+  sp_reg <- sp_time_slopes_df %>% 
+    filter(datasetID == dataset_name) %>% 
+    left_join(sp_start, by = c("cellSide", "scientificName")) %>% 
+    rowwise() %>% 
+    mutate(startYear = list(year_range),
+           fitted_reg = list(firstJCD + slope * (year_range - year0))) %>% 
+    unnest(c(startYear, fitted_reg))
+  
+  # Mean line per grain size
+  mean_reg <- sp_reg %>% 
+    group_by(cellSide, startYear) %>% 
+    summarise(fitted_mean = mean(fitted_reg, na.rm = TRUE))
+  
+  # Max per facet
+  y_limits <- sp_reg %>%
+    group_by(cellSide) %>%
+    summarise(ymax = max(fitted_reg, na.rm = TRUE),
+              ymin = min(fitted_reg, na.rm = TRUE))
+
+  
+  # Plot
+  p4_sp <- ggplot() + 
+    geom_line(data = sp_reg, aes(x = startYear, y = fitted_reg, group = scientificName), colour = "black", alpha = 0.05) +
+    geom_line(data = mean_reg, aes(x = startYear, y = fitted_mean, color = as.factor(cellSide)), size = 0.75) +
+    facet_wrap(~cellSide, ncol = scaling_levels, 
+               labeller = labeller(cellSide = ~paste0(.x, " km"))) +
+    scale_color_viridis_d(name = "Grid resolution") +
+    scale_x_continuous(breaks = unique(sp_reg$startYear)) +
+    scale_y_continuous(breaks = pretty(sp_reg$fitted_reg, n = 3)) +
+    labs(x = "Start year", y = "JCD") +
+    theme_classic() + 
+    theme(legend.position = "none",
+          axis.title.x = element_text(size = 10),
+          axis.text.x = element_text(size = 9, angle = 45, vjust = 1, hjust = 1),
+          axis.title.y = element_text(size = 10),
+          axis.text.y = element_text(size = 9),
+          strip.text = element_text(size = 9),
+          panel.spacing = unit(0.5, "lines"))
+  
+  return(p4_sp)
+}
+```
+
+-   Plotting
+
+```{r}
+#| label: sp-sac-time-plot
+#| message: false
+#| warning: false
+
+time_p4sp_list  <- purrr::map(datasetIDs, create.p4sp)
+# Naming them
+time_p4sp_list <- setNames(time_p4sp_list, datasetIDs)
+```
+
+#### Statistical analysis
+
+Step 1: look at distributions - they don't look very normal
+
+```{r}
+#| label: sp-sac-distributions
+#| message: false
+#| warning: false
+
+## Histograms of the distributions of JCD for all combinations of region x grain size x time
+hist_plots <- ggplot(data = sp_all_periods_df, aes(x = jcDifference)) +
+  geom_histogram(binwidth = 0.1, color = "black", fill = "steelblue") +
+  facet_grid(datasetID ~ scalingID, scales = "free_y") + 
+  labs(
+    x = "JCD",
+    y = "Count",
+    title = "Distribution JCD by dataset and scaling"
+  )
+
+
+boxplot_plots <- ggplot(data = sp_all_periods_df, aes(x = as.factor(samplingPeriodID), y = jcDifference, color = as.factor(samplingPeriodID))) +
+  geom_boxplot() + 
+  facet_grid(datasetID ~ scalingID) +
+  labs(
+    x = "start year",
+    y = "JCD",
+    title = "Boxplots JCD per year, dataset and scaling"
+  ) + 
+  theme(legend.position = "none")
+
+grid.arrange(hist_plots, boxplot_plots, ncol=2)
+```
+
+Step 2.1: Paired samples Wilcoxon test (non-parametric version of the paired t-test) for Europe, New York and Japan (two temporal repetitions)
+
+```{r}
+#| label: wilcox-sp-sac-time
+#| message: false
+#| warning: false
+
+wilc_test <- sp_all_periods_df %>% 
+  filter(n_periods == 2) %>% 
+  group_by(datasetID, scalingID, scientificName) %>% 
+  summarise(val_t1 = jcDifference[samplingPeriodID == 1], 
+              val_t2 = jcDifference[samplingPeriodID == 2]) %>% 
+  group_by(datasetID, scalingID) %>% 
+  summarise({ 
+    df <- cur_data() 
+    model <- wilcox.test(df$val_t2, df$val_t1, paired = TRUE, alternative = "less") # We assume it's becoming less autocorrelated 
+    model_res <- tidy(model) %>% 
+      mutate(method = model$method, 
+             signif = case_when(
+               p.value > 0.05 ~ "ns",
+               p.value <= 0.05 & p.value > 0.01 ~ "*",
+               p.value <= 0.01 & p.value > 0.001 ~ "**",
+               p.value <= 0.001 ~ "***"))
+    df_long <- df %>% 
+      pivot_longer(cols = starts_with("val_t"), 
+                   names_to = "period", 
+                   names_prefix = "val_", 
+                   values_to = "value") 
+    eff <- wilcox_effsize(df_long, 
+                          value ~ period, 
+                          paired = TRUE) 
+    bind_cols(model_res, eff) }) 
+
+```
+
+Step 2.2: Friedman test (non-parametric version of repeated measures ANOVA) with post-hoc wilcoxon pairwise tests
+
+```{r}
+#| label: friedman-sp-sac-time
+#| message: false
+#| warning: false
+
+fried_posthoc <- sp_all_periods_df %>% 
+  filter(n_periods == 3) %>% 
+  group_by(datasetID, scalingID, scientificName) %>% 
+  summarise(
+    val_t1 = jcDifference[samplingPeriodID == 1],
+    val_t2 = jcDifference[samplingPeriodID == 2],
+    val_t3 = jcDifference[samplingPeriodID == 3],
+    .groups = "drop"
+  ) %>% 
+  group_by(datasetID, scalingID) %>% 
+  group_modify(~{
+    
+    df <- .x %>% ungroup()
+    
+    # Pivot to long format
+    df_long <- df %>%
+      pivot_longer(
+        cols = starts_with("val_t"),
+        names_to = "period",
+        names_prefix = "val_",
+        values_to = "value"
+      )
+    
+    # Global Friedman test
+    fried_res <- rstatix::friedman_test(df_long, value ~ period | scientificName)
+    eff_res <- rstatix::friedman_effsize(df_long, value ~ period | scientificName)
+    
+    # Posthoc Wilcoxon for all pairs
+    posthoc_res <- df_long %>% 
+      pairwise_wilcox_test(
+        value ~ period,
+        paired = TRUE,
+        p.adjust.method = "BH"
+      ) %>% 
+      mutate(
+        effsize = map2_dbl(group1, group2, ~{
+          pair_df <- df_long %>% filter(period %in% c(.x, .y))
+          wilcox_effsize(pair_df, value ~ period, paired = TRUE)$effsize
+        }),
+        signif = case_when(
+          p.adj > 0.05 ~ "ns",
+          p.adj <= 0.05 & p.adj > 0.01 ~ "*",
+          p.adj <= 0.01 & p.adj > 0.001 ~ "**",
+          p.adj <= 0.001 ~ "***"
+        ),
+        friedman_statistic = fried_res$statistic,
+        friedman_df = fried_res$df,
+        friedman_p = fried_res$p,
+        friedman_effsize = eff_res$effsize,
+        friedman_magnitude = eff_res$magnitude
+      )
+    
+    posthoc_res
+  }) %>% ungroup()
+
+fried_posthoc
+```
+
+### Richness and species temporal trends plot
+
+-   Arranging the richness and species plots
+
+```{r}
+#| label: all-sac-time-plot
+#| message: false
+#| warning: false
+
+# Arrange the plots and labels into a grid
+plot_time_fig <- grid.arrange(
+  arrangeGrob(time_p4rich_list$Czechia, 
+              time_p4sp_list$Czechia, 
+              widths = c(1, 3)),
+  arrangeGrob(time_p4rich_list$Europe, 
+              time_p4sp_list$Europe,
+              widths = c(1, 3)),
+  arrangeGrob(time_p4rich_list$`New York`,
+              time_p4sp_list$`New York`, 
+              widths = c(1, 3)),
+  arrangeGrob(time_p4rich_list$Japan, 
+              time_p4sp_list$Japan, 
+              widths = c(1, 3)),
+  nrow = 4
+)
+```
+
+-   Saving
+
+```{r}
+#| label: save-all-sac-time-plot
+#| message: false
+#| warning: false
+
+ggsave(plot = plot_time_fig, dpi = 300, width = 6, height = 7, file.path(paths$figure_path, "p4_sac_time.png"))
+```
+
+## 3: Empirical change of SAC across grains
+
+Analyzing how SAC changes across time for diversity (species richness) and distributions (species distributions) divided by grain.
+
+### Species richness
+
+#### Scaling plots
+
+-   Function
+
+```{r}
+#| label: function-richness-sac-grain-plot
+#| message: false
+#| warning: false
+
+
+# Plot function
+create.p5rich <- function(dataset_name, data = data_richness) {
+  
+  # Richness moran's I data
+  grain_sac_rich_df <- data %>% 
+    filter(datasetID == dataset_name & !is.na(moransI)) %>% 
+    mutate(startYear = as.factor(startYear))
+  
+  
+  # Plot for Richness Moran's I
+  p5_rich <- ggplot(data = grain_sac_rich_df,
+                    aes(x = cellSide,
+                        y = moransI, 
+                        color = as.factor(startYear),
+                        fill = as.factor(startYear),
+                        group = startYear)) +
+    geom_hline(yintercept = 0, colour = "red", linetype = "dashed") +
+    geom_line(size = 0.75) +
+    geom_point(size = 2, shape = 21) +
+    scale_x_log10(breaks = unique(grain_sac_rich_df$cellSide),
+                  labels = unique(grain_sac_rich_df$cellSide)) +
+    scale_color_viridis_d(name = "Start year") +
+    scale_fill_viridis_d(name = "Start year") +
+    ylim(-0.2, 0.9) +
+    labs(x = "Cell side (km)", y = "Moran's I") +
+    theme_classic() +
+    theme(legend.position = "none",
+          axis.title.x = element_blank(),
+          axis.text.x = element_text(size = 8, angle = 45, vjust = 1, hjust = 1),
+          axis.title.y = element_text(size = 9),
+          axis.text.y = element_text(size = 8))
+  
+  return(p5_rich)
+}
+
+```
+
+-   Plotting
+
+```{r}
+#| label: richness-sac-grain-plot
+#| message: false
+#| warning: false
+
+# Plots
+grain_p5rich_list <- purrr::map(datasetIDs, create.p5rich)
+# Naming them
+grain_p5rich_list <- setNames(grain_p5rich_list, datasetIDs)
+```
+
+#### Linear models
+
+-   Modelling richness SAC (Moran's I) as a function of grain size
+
+```{r}
+#| label: richness-sac-grain-lm
+#| message: false
+#| warning: false
+
+rich_lm_grain <- data_richness %>% 
+  group_by(datasetID, samplingPeriodID) %>% 
+  arrange(scalingID, .by_group = TRUE) %>% 
+  group_modify(~ {
+    mod <- lm(moransI ~ log(cellSide), data = .x)
+    slope_data <- tidy(mod) %>% filter(term == "log(cellSide)")
+    r2_data <- glance(mod) %>% select(r.squared)
+    bind_cols(slope_data, r2_data) %>% 
+      mutate(n_grains = nrow(.x))
+  }) %>% 
+  ungroup() %>% 
+  mutate(signif = case_when(
+               p.value > 0.05 ~ "ns",
+               p.value <= 0.05 & p.value > 0.01 ~ "*",
+               p.value <= 0.01 & p.value > 0.001 ~ "**",
+               p.value <= 0.001 ~ "***"))
+```
+
+-   Save richness lm output
+
+```{r}
+#| label: save-richness-sac-grain-lm
+#| message: false
+#| warning: false
+
+# Save median JCD grain table
+write.csv(rich_lm_grain, file.path(paths$output_path, "lm_grain_rich.csv"))
+```
+
+-   Sensitivity test (real grain sizes): because the cell sides we are indicating are approximated (not the real ones), we conducted a sensitivity test to see whether these differences are big
+
+```{r}
+#| label: richness-sac-grain-lm-sensitivity-test
+#| message: false
+#| warning: false
+
+rich_lm_grain_v2 <- data_richness %>% 
+  left_join(., grid_attr, by = c("datasetID", "scalingID")) %>% 
+  group_by(datasetID, samplingPeriodID) %>% 
+  arrange(scalingID, .by_group = TRUE) %>% 
+  group_modify(~ {
+    mod <- lm(moransI ~ log(meanCellSide), data = .x)
+    slope_data <- tidy(mod) %>% filter(term == "log(meanCellSide)")
+    r2_data <- glance(mod) %>% select(r.squared)
+    bind_cols(slope_data, r2_data) %>% 
+      mutate(n_grains = nrow(.x))
+  }) %>% 
+  ungroup() %>% 
+  mutate(signif = case_when(
+               p.value > 0.05 ~ "ns",
+               p.value <= 0.05 & p.value > 0.01 ~ "*",
+               p.value <= 0.01 & p.value > 0.001 ~ "**",
+               p.value <= 0.001 ~ "***"))
+```
+
+### Species distributions
+
+#### Linear models
+
+-   Model considering all species (just filtering out the ones that have no SAC value)
+
+```{r}
+#| label: sp-sac-grain-lm
+#| message: false
+#| warning: false
+species_lm_grain <- data_species %>% 
+  filter(!is.na(jcDifference)) %>% 
+  group_by(datasetID, startYear) %>% 
+  group_map(~ { 
+    mod <- lm(jcDifference ~ log(cellSide), data = .x) 
+    res <- bind_cols(tidy(mod) %>% 
+                        filter(term == "log(cellSide)"), 
+                      glance(mod) %>% select(r.squared) ) %>% 
+      rename( slope = estimate, se_slope = std.error, r2 = r.squared, t_value = statistic ) # add grouping keys from .y 
+    cbind(.y, res) }) %>% 
+  bind_rows() %>% 
+  ungroup() %>% 
+  mutate(signif = case_when( p.value > 0.05 ~ "ns", p.value <= 0.05 & p.value > 0.01 ~ "*", p.value <= 0.01 & p.value > 0.001 ~ "**", p.value <= 0.001 ~ "***"))
+```
+
+-   Saving
+
+```{r}
+#| label: save-sp-sac-grain-lm
+#| message: false
+#| warning: false
+
+write.csv(species_lm_grain, file.path(paths$output_path, "lm_grain_sp.csv"))
+```
+
+-   Sensitivity
+
+#### Plots
+
+-   Function for plots
+
+```{r}
+#| label: function-distributions-sac-grain-plot
+#| message: false
+#| warning: false
+
+
+# Plot function
+create.p5sp <- function(dataset_name, data = data_species, data_slopes = species_lm_grain) {
+  
+  # Filter and prepare the main plotting data
+  grain_sac_sp_df <- data %>% 
+    filter(datasetID == dataset_name,
+           !is.na(jcDifference), 
+           is.finite(jcDifference)) %>% 
+    mutate(period = paste(startYear, endYear, sep = "-"))
+  
+  # Identify which startYears are significant in the slope data
+  signif_years <- data_slopes %>%
+    filter(datasetID == dataset_name, p.value <= 0.05) %>%
+    pull(startYear)
+  
+  # Base plot (boxplots of JCD by grain size)
+  p5_sp <- ggplot(grain_sac_sp_df, 
+                  aes(x = cellSide, y = jcDifference)) + 
+    geom_boxplot(aes(group = factor(cellSide), fill = factor(startYear)),
+                 outlier.size = 1, linewidth = 0.5) +
+    facet_wrap(~period, scales = "free") + 
+    scale_x_log10(breaks = unique(grain_sac_sp_df$cellSide),
+                  labels = unique(grain_sac_sp_df$cellSide)) +
+    scale_fill_viridis_d(name = "Start year") +
+    theme_classic() +
+    labs(x = "Cell side (km)", y = "JCD") +
+    theme(legend.position = "none",
+          axis.title.x = element_blank(),
+          axis.text.x = element_text(size = 8, angle = 45, vjust = 1, hjust = 1),
+          axis.title.y = element_text(size = 9),
+          axis.text.y = element_text(size = 8),
+          strip.text = element_text(size = 8),
+          strip.background = element_blank(),
+          panel.spacing = unit(0.5, "lines"))
+  
+  # Add regression lines only for significant start years
+  p5_sp <- p5_sp +
+    geom_smooth(
+      data = grain_sac_sp_df %>% filter(startYear %in% signif_years),
+      aes(x = cellSide, y = jcDifference, group = period),
+      method = "lm", formula = y ~ log(x),
+      se = FALSE, color = "#CD4F39", linewidth = 1
+    )
+  
+  return(p5_sp)
+}
+```
+
+-   Plotting
+
+```{r}
+#| label: distributions-sac-grain-plot
+#| message: false
+#| warning: false
+
+
+# Plots
+grain_p5sp_list <- purrr::map(datasetIDs, create.p5sp)
+# Naming them
+grain_p5sp_list <- setNames(grain_p5sp_list, datasetIDs)
+```
+
+#### Linear models
+
+-   Sensitivity test (real grain sizes): because the cell sides we are indicating are approximated (not the real ones), we conducted a sensitivity test to see whether these differences are big
+
+```{r}
+#| label: sp-sac-grain-lm-sensitivity-test
+#| message: false
+#| warning: false
+
+
+species_lm_grain_v2 <- data_species %>% 
+  left_join(., grid_attr, by = c("datasetID", "scalingID")) %>% 
+  filter(!is.na(jcDifference)) %>% 
+  group_by(datasetID, startYear) %>%
+  group_map(~ {
+    mod <- lm(jcDifference ~ log(medianArea), data = .x)
+    
+    res <- bind_cols(
+      tidy(mod) %>% filter(term == "log(medianArea)"),
+      glance(mod) %>% select(r.squared)
+    ) %>%
+      rename(
+        slope = estimate,
+        se_slope = std.error,
+        r2 = r.squared,
+        t_value = statistic
+      )
+    
+    # add grouping keys from .y
+    cbind(.y, res)
+  }) %>%
+  bind_rows() %>% 
+  ungroup() %>% 
+  mutate(signif = case_when( p.value > 0.05 ~ "ns", p.value <= 0.05 & p.value > 0.01 ~ "*", p.value <= 0.01 & p.value > 0.001 ~ "**", p.value <= 0.001 ~ "***"))
+```
+
+#### Mean and median species JCD across grains
+
+-   Table
+
+```{r}
+#| label: sp-mean-sac-grain
+#| message: false
+#| warning: false
+
+### Median join count across grains plot (species distributions)
+# Data preparation (table)
+mean_grain_df <- data_species %>% 
+  filter(!is.na(jcDifference), 
+         is.finite(jcDifference)) %>% 
+  group_by(datasetID, samplingPeriodID, startYear, cellSide) %>%
+  summarise(meanJCD = mean(jcDifference),
+            medianJCD = median(jcDifference), 
+            .groups = 'drop') %>% 
+  select(datasetID, samplingPeriodID, startYear, cellSide, meanJCD, medianJCD) %>%
+  mutate(datasetID = factor(datasetID, levels = c("Czechia", "Europe", "New York", "Japan"))) %>% 
+  ungroup()
+```
+
+-   Plot
+
+```{r}
+#| label: plot-sp-mean-sac-grain
+#| message: false
+#| warning: false
+
+# Plot
+ps2_means <- ggplot(data = mean_grain_df,
+                           aes(x = cellSide, 
+                               y = meanJCD,
+                               color = datasetID, 
+                               group = interaction(datasetID, samplingPeriodID),
+                               shape = factor(samplingPeriodID),
+                               linetype = factor(samplingPeriodID))) + 
+  geom_hline(yintercept = 0, colour = "red", linetype = "dashed") +
+  geom_line(size = 1, show.legend = TRUE) +  
+  geom_point(size = 2, show.legend = TRUE) +  
+  scale_x_log10() +
+  scale_color_manual(values = region_col) +  
+  scale_shape_manual(values = c(16, 17, 18), name = "Atlas replication") +  
+  scale_linetype_manual(values = c("solid", "dashed", "dotted"), name = "Atlas replication") +
+  labs(x = "Cell side (km)",
+       y = "JCD mean") +
+  ylim(min(data_species$jcDifference, na.rm = T) - 0.01,
+       max(data_species$jcDifference, na.rm = T) + 0.01) +
+  theme_classic() +
+  theme(
+    legend.title = element_text(size = 12),  
+    legend.text = element_text(size = 12),  
+    legend.justification = c(1, 1),  
+    plot.margin = margin(t = 5, r = 15, b = 5, l = 5),  
+    legend.position = c(0.99, 1),  
+    axis.title.x = element_text(size = 12),
+    axis.text.x = element_text(size = 10),
+    axis.title.y = element_text(size = 12),
+    axis.text.y = element_text(size = 10),
+    legend.spacing.y = unit(0.15, "cm"),  
+    legend.key.size = unit(0.5, "cm"),  
+    legend.key.width = unit(1.5, "cm")  # More space for better visibility
+  ) +
+  guides(
+    shape = guide_legend(title = "Atlas replication",
+                         override.aes = list(size = 2)),  # Bigger symbols
+    linetype = guide_legend(title = "Atlas replication",
+                            override.aes = list(size = 1)),  # Thicker legend lines
+    color = guide_legend(title = "Atlas location")  
+  )
+
+
+# Plot
+print(ps2_means)
+```
+
+-   Saving both
+
+```{r}
+#| label: save-sp-mean-sac-grain
+#| message: false
+#| warning: false
+
+# Save median JCD grain table
+write.csv(mean_grain_df, file.path(paths$output_path, "mean_grain_sac_sp.csv"))
+
+# Save plot
+ggsave(plot = ps2_means, dpi = 300, width = 5, height = 6,
+       file.path(paths$figure_path,
+                 "ps2_sac_grain_mean.png"))
+```
+
+### 4. Joining species richness and distribution plots
+
+```{r}
+#| label: join-sac-grain-plot
+#| message: false
+#| warning: false
+
+# Arranging all the plots into one (Richness Moran's I and Species Join count)
+plot_grain_fig <- grid.arrange(
+  arrangeGrob(grain_p5rich_list$Czechia, 
+              grain_p5sp_list$Czechia, 
+              widths = c(1, 3)),
+  arrangeGrob(grain_p5rich_list$Europe, 
+              grain_p5sp_list$Europe, 
+              widths = c(1, 3)),
+  arrangeGrob(grain_p5rich_list$`New York`, 
+              grain_p5sp_list$`New York`, 
+              widths = c(1, 3)),
+  arrangeGrob(grain_p5rich_list$Japan, 
+              grain_p5sp_list$Japan, 
+              widths = c(1, 3)),
+  nrow = 4
+)
+```
+
+-   Saving plot
+
+```{r}
+#| label: save-sac-grain-plot
+#| message: false
+#| warning: false
+
+# Saving
+ggsave(plot = plot_grain_fig, dpi = 600, width = 5.1, height = 6,
+       file.path(paths$figure_path, "p5_sac_grain.png"))
+```

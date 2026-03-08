@@ -1,0 +1,179 @@
+---
+title: "11_figure_richness"
+author: "Carmen Soria"
+format: html
+editor: visual
+---
+
+# Richness maps
+
+### Libraries
+
+```{r}
+#| label: libraries
+#| message: false
+#| warning: false
+
+pacman::p_load(tidyverse, sf, ggplot2, viridis, here, patchwork) 
+```
+
+### Directories
+
+```{r}
+#| label: directory-variables
+#| message: false
+#| warning: false
+
+# File with paths
+source(file.path(here(), "codes", "00_config_file.R"))
+```
+
+### Load data and add relevant CRS to each BBA
+
+```{r}
+#| label: load-data
+#| message: false
+#| warning: false
+
+# Richness
+richness_sf <- readRDS(file.path(paths$output_path, "richness_sf.rds"))%>% 
+  mutate(cellSide = case_when(
+    datasetID == "Czechia" ~ as.numeric(as.character(scalingID)) * 11, 
+    datasetID == "Europe" ~ as.numeric(as.character(scalingID)) * 50, 
+    datasetID == "New York" ~ as.numeric(as.character(scalingID)) * 5,
+    datasetID == "Japan" ~ as.numeric(as.character(scalingID)) * 20,
+  ),
+  crsBBA = case_when(
+    datasetID == "Czechia" ~ "+proj=laea +lat_0=49.75 +lon_0=15.5 +datum=WGS84 +units=m +no_defs",
+    datasetID == "Europe" ~ "+proj=laea +lat_0=52 +lon_0=10 +datum=WGS84 +units=m +no_defs",
+    datasetID == "New York" ~ "+proj=laea +lat_0=43 +lon_0=-75 +datum=WGS84 +units=m +no_defs",
+    datasetID == "Japan" ~ "+proj=laea +lat_0=36 +lon_0=138 +datum=WGS84 +units=m +no_defs"
+  ))
+
+# Dataset IDs
+datasetIDs <- levels(richness_sf$datasetID)
+
+```
+
+## Richness plots at time 1 across grain sizes
+
+### Functions
+
+```{r}
+#| label: function-richness-scales-plot
+#| message: false
+#| warning: false
+
+
+# Create a plotting function
+create_map <- function(data, cellSide, minRichness, maxRichness, crs_BBA) {
+  rich_scale <- scale_fill_viridis(
+    name = "Richness",
+    limits = c(minRichness, maxRichness),
+    na.value = "white"
+  )
+  
+  
+  ggplot() +
+    geom_sf(data = data, aes(fill = richness), color = NA) +
+    rich_scale +
+    coord_sf(crs = crs_BBA) +
+    ggtitle(paste(cellSide, "x", cellSide, "km")) +
+    theme_void() +
+    theme(
+      plot.title = element_text(hjust = 0.5, size = 12),
+      legend.position = "none"  # Remove legend from main plot
+    )
+}
+```
+
+### Plots
+
+```{r}
+#| label: richness-scales-plot
+#| message: false
+#| warning: false
+
+
+# Calculate min/max richness per dataset
+dataset_scales <- richness_sf %>%
+  st_drop_geometry() %>% 
+  group_by(datasetID) %>%
+  summarise(
+    minRichness = min(richness, na.rm = TRUE),
+    maxRichness = max(richness, na.rm = TRUE)
+  )
+
+# Create a dataframe in which the information of each datasetID and scalingID combination is nested within the dataset in the data column
+nested_sf <- richness_sf %>%
+  filter(samplingPeriodID == 1) %>%
+  group_by(datasetID, cellSide, crsBBA) %>%
+  nest() %>%
+  left_join(dataset_scales, by = "datasetID") # Add the scales
+
+
+# Generate plots
+plot_list <- nested_sf %>%
+  mutate(plot_name = paste(datasetID, cellSide, sep = "_")) %>%
+  group_split(row_number()) %>%
+  map(~ {
+    plot <- create_map(
+      data = .x$data[[1]],
+      cellSide = .x$cellSide,
+      minRichness = .x$minRichness,
+      maxRichness = .x$maxRichness,
+      crs_BBA = .x$crsBBA
+    )
+    set_names(list(plot), .x$plot_name)
+  }) %>%
+  flatten()
+```
+
+### Final figures
+
+```{r}
+#| label: richness-scales-patchwork
+#| message: false
+#| warning: false
+
+
+# Czechia
+cz_patch <- (plot_list$Czechia_11 | plot_list$Czechia_22 | plot_list$Czechia_44) +
+  plot_layout(guides = "collect") &
+  theme(legend.position = "right")
+
+# Europe
+ebba_patch <- (plot_list$Europe_50 | plot_list$Europe_100 |plot_list$Europe_200 | 
+                 plot_list$Europe_400 | plot_list$Europe_800) +
+  plot_layout(guides = "collect") &
+  theme(legend.position = "right")
+
+# New York
+ny_patch <- (plot_list$`New York_5` | plot_list$`New York_10` |plot_list$`New York_20` | 
+               plot_list$`New York_40` | plot_list$`New York_80`) +
+  plot_layout(guides = "collect") &
+  theme(legend.position = "right")
+
+# Japan
+jp_patch <- (plot_list$Japan_20 | plot_list$Japan_40 |plot_list$Japan_80 | 
+                 plot_list$Japan_160) +
+  plot_layout(guides = "collect") &
+  theme(legend.position = "right")
+
+
+# All together (vertical layout)
+final_patch <- cz_patch / ebba_patch / ny_patch / jp_patch
+```
+
+-   Saving
+
+```{r}
+#| label: save-richness-scales-patchwork
+#| message: false
+#| warning: false
+
+
+# Saving
+ggsave(plot = final_patch, device = "png", dpi = 600, limitsize = FALSE,
+       file.path(paths$figure_path, "p3_all.png"))
+```

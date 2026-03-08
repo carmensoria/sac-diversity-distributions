@@ -1,0 +1,223 @@
+---
+title: "06_sac_species"
+author: "Carmen Soria"
+format: html
+editor: visual
+---
+
+# Calculating species Spatial Autocorrelation
+
+### Library
+
+```{r}
+#| label: libraries
+#| message: false
+#| warning: false
+
+pacman::p_load(tidyverse, sf, spdep, tictoc, here)
+```
+
+### Directory variables
+
+```{r}
+#| label: directory-variables
+#| message: false
+#| warning: false
+
+# File with paths
+source(file.path(here(), "codes", "00_config_file.R"))
+```
+
+### Loading data
+
+```{r}
+#| label: load-data
+#| message: false
+#| warning: false
+
+
+# Species presence data
+data_tbl <- readRDS(file.path(paths$output_path, "species_sf.rds"))
+
+# Occupancy table
+occ_tbl <- readRDS(file.path(paths$output_path, "occupancy_table.rds"))
+```
+
+## Species SAC
+
+Calculating global SAC metrics for each species for each combination of area of study, time period and grain size. We are calculating two metrics (Global Moran's I and Join count) for a Queen neighbouring scheme (all immediately adjacent cells). I am calculating both Moran's I and Join count but use only Join counts for the final ms. I am using binary (B) weighing scheme for Join count and a row standardised weighting scheme (W) for Moran's I.
+
+### Functions
+
+1.  Subsetting species
+
+Getting an sf object that covers the entire study area (i.e. all cells) in which presence equals 1 when the species is present, and 0 when it is absent
+
+```{r}
+#| label: function-subset-species
+#| message: false
+#| warning: false
+
+### Subset species presence data and convert the rest of the grid into absences
+subset.sp.data <- function(unitsp, sp_name) {
+  filtered_data <- unitsp %>%
+    mutate(scientificName = ifelse(scientificName != sp_name, NA, scientificName)) %>%
+    group_by(across(-c(scientificName, geometry))) %>%
+    slice(which.max(!is.na(scientificName))) %>%
+    mutate(presence = ifelse(!is.na(scientificName), 1, 0))
+  
+  return(filtered_data)
+}
+```
+
+2.  Calculating SAC
+
+```{r}
+#| label: function-sac-species
+#| message: false
+#| warning: false
+
+
+### Calculating the global SAC (join count and moran's I) of a species distribution
+calc.gsac.sp <- function(species_sf, jc_style = "B", moran_style = "W"){
+  # Assigning an NA in case SAC can't be calculated (i.e., all cells are occupied)
+  moran_q <- NA
+  jc_q <- NA
+
+  # Create queen contiguity neighbourhoods
+  nb_q <- poly2nb(species_sf, queen = TRUE)
+
+  ## Join count calculation
+  tryCatch({
+    jc_q <- joincount.test(as.factor(species_sf$presence),
+                           nb2listw(nb_q, style = jc_style, zero.policy = T))
+    names(jc_q) <- c("Absence", "Presence")
+  }, error = function(e) {
+    jc_q <- NA
+  })
+
+  ## Moran's I (queen)
+  tryCatch({
+    moran_q <- moran.test(species_sf$presence,
+                          nb2listw(nb_q, style = moran_style, zero.policy = TRUE))
+  }, error = function (e) {
+    moran_q <- NA
+  })
+  
+  ## Create results dataframe
+  results_df <- data.frame(
+    datasetID = unique(species_sf$datasetID),
+    startYear = unique(species_sf$startYear),
+    endYear = unique(species_sf$endYear),
+    samplingPeriodID = unique(species_sf$samplingPeriodID),
+    scalingID = unique(species_sf$scalingID),
+    scientificName = unique(na.omit(species_sf$scientificName)),
+    nPresence = sum(species_sf$presence),
+    
+    # Join count metrics
+    jcStatistic = if(is.list(jc_q)) jc_q$Presence$estimate[1] else NA,
+    jcExpectation = if(is.list(jc_q)) jc_q$Presence$estimate[2] else NA,
+    jcVariance = if(is.list(jc_q)) jc_q$Presence$estimate[3] else NA,
+    jcPval = if(is.list(jc_q)) jc_q$Presence$p.value else NA,
+    jcZScore = if(is.list(jc_q)) (jc_q$Presence$estimate[1] - jc_q$Presence$estimate[2]) / sqrt(jc_q$Presence$estimate[3]) else NA,
+    jcDifference = if (is.list(jc_q))
+      (jc_q$Presence$estimate[1] / sum(species_sf$presence)) -
+      (jc_q$Presence$estimate[2] / sum(species_sf$presence)) else NA,
+    
+    # Moran's I metrics
+    moransI = if(is.list(moran_q)) moran_q$estimate[1] else NA,
+    moransIPval = if(is.list(moran_q)) moran_q$p.value else NA
+  )
+
+  return(results_df)
+}
+```
+
+### Calculation
+
+```{r}
+#| label: calculation-sac-species
+#| message: false
+#| warning: false
+
+
+sf_use_s2(FALSE)
+
+tic()
+sac_sp_tbl <- data_tbl %>% 
+  group_by(datasetID, startYear, endYear, samplingPeriodID, scalingID) %>% 
+  group_map(~ {
+    # Group metadata (to add later to the output table)
+    group_keys <- list(
+      datasetID = .y$datasetID,
+      samplingPeriodID = .y$samplingPeriodID,
+      startYear = .y$startYear,
+      endYear = .y$endYear,
+      scalingID = .y$scalingID
+    )
+    
+    group_data <- .x
+    sp_names <- unique(group_data$scientificName)
+    
+    map(sp_names, ~ {
+      current_sp <- .x
+      species_subset <- subset.sp.data(group_data, current_sp) %>% 
+        bind_cols(as.data.frame(group_keys))
+      calc.gsac.sp(species_subset)
+    }) %>% 
+      list_rbind()
+  }) %>% 
+  bind_rows()
+toc()
+
+# Removing rownames
+rownames(sac_sp_tbl) <- NULL
+```
+
+### Formatting output
+
+-   Defining levels again
+
+```{r}
+#| label: defining-datasetid-levels
+#| message: false
+#| warning: false
+
+
+# Defining levels again
+sac_sp_tbl1 <- sac_sp_tbl %>% 
+  mutate(
+    datasetID = factor(datasetID, levels = c("Czechia", "Europe", 
+                                             "New York", "Japan"))) %>% 
+  mutate(across(c(scalingID, samplingPeriodID), as.factor))
+```
+
+-   Adding occupancy
+
+```{r}
+#| label: adding-occupancy
+#| message: false
+#| warning: false
+
+
+# Joining SAC and occupancy
+sac_sp_tbl2 <- sac_sp_tbl1 %>% 
+  full_join(occ_tbl)
+
+# Check: are occ cells in the sac df = to the ones of the occ df?
+identical(as.numeric(sac_sp_tbl2$nPresence), 
+          as.numeric(sac_sp_tbl2$occCells)) # Yes!
+
+# Remove the duplicated columns
+sac_sp_tbl2$nPresence <- NULL
+```
+
+-   Saving
+
+```{r}
+#| label: save-species-sac
+#| message: false
+#| warning: false
+
+write.csv(sac_sp_tbl2, file.path(paths$output_path, "sac_species_table.csv"))
+```

@@ -1,0 +1,602 @@
+---
+title: "01_sac_scenarios"
+author: "Carmen Soria"
+format: html
+editor: visual
+---
+
+# Hypothetical species distributions and their SAC
+
+Creation of hypothetical species distributions in a grid and calculating their spatial autocorrelation (SAC) to see how SAC can change in time (occupancy) and with spatial scale.
+
+The outcome of this code are Figure 1 and 2 of the manuscript.
+
+### Libraries
+
+```{r}
+#| label: libraries
+#| message: false
+#| warning: false
+
+pacman::p_load(here, sf, tidyverse, spdep, gridExtra, rcartocolor)
+```
+
+### Directories
+
+```{r}
+#| label: directory-variables
+#| message: false
+#| warning: false
+
+
+source(file.path(here(), "codes", "00_config_file.R"))
+```
+
+### Input variables
+
+```{r}
+#| label: input-vars
+#| message: false
+#| warning: false
+
+## Grain size of the fine coarse grid
+cell_side <- 10000 # 1000 m = 10 km
+
+## Color palettes for plots
+pal_general <- carto_pal(4, "Safe")
+# Occupancy (Figure 1)
+pal_occupancy <- rep(pal_general[1:3], 3)
+# Grain (Figure 2)
+pal_grain <- rep(pal_general, 2)
+```
+
+### Loading Presence - Absence matrices
+
+`autocorr_occ`: list of matrices with combinations of different levels of occupancy and aggregation `autocorr_grain`: list of matrices with different presence dispositions at two spatial scales
+
+These matrices of hypothetical presences (1) and absences (0) previously generated manually
+
+```{r}
+#| label: load-sac-grids
+#| message: false
+#| warning: false
+#| results: hide
+
+## Figure 1: occupancy and autocorrelation
+autocorr_occ <- readRDS(file.path(paths$input_path, "sac_grid_occ.rds"))
+## Figure 2: grain and autocorrelation
+autocorr_grain <- readRDS(file.path(paths$input_path, "sac_grid_grain.rds"))
+```
+
+## Presence/absence grids
+
+Transforming these matrices of presence / absence into spatial grids for which we can calculate SAC
+
+-   Create grid function: first we create an empty grid
+
+```{r}
+#| label: function-create-grid
+#| message: false
+#| warning: false
+
+
+### Function to generate grid specifying number of squares, grain size and projection. 
+
+## For this hypothetical grid we used a 33N UTM projection (CRS 32633)
+create.grid <- function(num_squares, grain_size, crs = 32633) {
+  # Define the coordinates for the bottom-left corner of the grid
+  x_min <- 0
+  y_min <- 0
+
+  # Create a list to store the square polygons
+  squares <- vector("list", num_squares^2)
+
+  # Create the grid of squares
+  count <- 1
+  for (i in 0:(num_squares - 1)) {
+    for (j in 0:(num_squares - 1)) {
+      x <- x_min + i * grain_size
+      y <- y_min + j * grain_size
+      squares[[count]] <- st_polygon(list(matrix(c(
+        x, y,
+        x + grain_size, y,
+        x + grain_size, y + grain_size,
+        x, y + grain_size,
+        x, y
+      ), ncol = 2, byrow = TRUE)))
+      count <- count + 1
+    }
+  }
+
+  # Convert to an sf object and assign UTM Zone 33N
+  grid_sf <- st_sf(geometry = st_sfc(squares))
+  st_crs(grid_sf) <- crs 
+
+  return(grid_sf)
+}
+```
+
+-   Creating grids
+
+```{r}
+#| label: create-grids
+#| message: false
+#| warning: false
+#| results: hide
+
+# Fine grain 16x16 grid (10 km side length)
+sf_grid_fine <- create.grid(num_squares = 16, grain_size = cell_side)
+
+# Coarse grain 4x4 grid (40 km side length)
+sf_grid_coarse <- create.grid(num_squares = 4, grain_size = cell_side * 4)
+```
+
+-   Joining spatial grids with presence/absence matrices
+
+    -   `sf_grid_occ_list`: list of spatial grids for the relationship between OCC and SAC
+    -   `sf_grid_grain_fine_list`: list of fine-grain spatial grids for the relationship between grain size and SAC
+    -   `sf_grid_grain_coarse_list`: list of coarse-grain spatial grids for the relationship between grain size and SAC
+    -   `sf_grid_grain_list`: list of fine and coarse-grain spatial grids for the relationship between grain size and SAC
+
+```{r}
+#| label: presence-absence-grids
+#| message: false
+#| warning: false
+
+# Fig 1. Occupancy and SAC
+sf_grid_occ_list <- list()
+for(i in 1:length(autocorr_occ)) {
+  sf_grid_occ_list[[i]] <- sf_grid_fine
+  sf_grid_occ_list[[i]]$presence <- c(autocorr_occ[[i]])
+}
+names(sf_grid_occ_list) <- names(autocorr_occ)
+
+
+# Fig 2. Grain size and SAC
+# Fig 2.1 Fine grain
+autocorr_grain_fine <- autocorr_grain[grep("_fine", names(autocorr_grain))]
+sf_grid_grain_fine_list <- list()
+for(i in 1:length(autocorr_grain_fine)) {
+  sf_grid_grain_fine_list[[i]] <- sf_grid_fine
+  sf_grid_grain_fine_list[[i]]$presence <- c(autocorr_grain_fine[[i]])
+}
+names(sf_grid_grain_fine_list) <- names(autocorr_grain_fine)
+
+# Fig 2.2 Coarse grain
+autocorr_grain_coarse <- autocorr_grain[grep("_coarse", names(autocorr_grain))]
+sf_grid_grain_coarse_list <- list()
+for(i in 1:length(autocorr_grain_coarse)) {
+  sf_grid_grain_coarse_list[[i]] <- sf_grid_coarse
+  sf_grid_grain_coarse_list[[i]]$presence <- c(autocorr_grain_coarse[[i]])
+}
+names(sf_grid_grain_coarse_list) <- names(autocorr_grain_coarse)
+
+
+# Fig. 2 Storing fine and coarse grain grids into a list
+sf_grid_grain_list <- c(sf_grid_grain_fine_list, sf_grid_grain_coarse_list)
+```
+
+## Calculating Spatial autocorrelation of hypothetical distributions
+
+Join Count metrics calculated: Observed JC, Expected JC, Variance JC, Significance JC, and JC difference (average observed number of JC per cell - average expected number of JC per cell)
+
+-   Function to calculate SAC
+
+```{r}
+#| label: function-sac-calc-grids
+#| message: false
+#| warning: false
+
+
+calc.jc.list <- function(sf_list, column_sac = "presence") {
+  # Empty list to store results
+  jc_list <- vector("list", length(sf_list))
+  names(jc_list) <- names(sf_list)
+  
+  # Calculate SAC for all grid arrangements
+  for(i in seq_along(sf_list)) {
+    sf_object <- sf_list[[i]]
+    jc_result <- joincount.test(
+      as.factor(sf_object[[column_sac]]),
+      nb2listw(poly2nb(sf_object, queen = TRUE), style = "B")
+      )
+    names(jc_result) <- c("Absence_0", "Presence_1")
+    
+    # Store results in the list
+    jc_list[[i]] <- list(
+      name = names(sf_list)[[i]],
+      presence_n = sum(sf_object[[column_sac]], na.rm = T),
+      jc_statistic_pres = jc_result$Presence_1$estimate[1],
+      jc_expectation_pres = jc_result$Presence_1$estimate[2],
+      jc_variance_pres = jc_result$Presence_1$estimate[3],
+      jc_pvalue_pres = jc_result$Presence_1$p.value,
+      jc_zscore_pres = (jc_result$Presence_1$estimate[1] - jc_result$Presence_1$estimate[2]) /
+        sqrt(jc_result$Presence_1$estimate[3]),
+      jc_diff_pres = (jc_result$Presence_1$estimate[1] /
+                        sum(sf_object[[column_sac]], na.rm = TRUE)) - 
+        (jc_result$Presence_1$estimate[2] / 
+           sum(sf_object[[column_sac]], na.rm = TRUE))
+    )
+  }
+  return(jc_list)
+}
+```
+
+-   SAC calculation
+
+```{r}
+#| label: calculation-sac-grids
+#| message: false
+#| warning: false
+
+
+## List of autocorrelation metrics
+sac_occ_list <- calc.jc.list(sf_grid_occ_list)
+sac_grain_list <- calc.jc.list(sf_grid_grain_list)
+
+## Dataframes 
+sac_occ_df <- bind_rows(sac_occ_list, .id = "name")
+sac_grain_df <- bind_rows(sac_grain_list, .id = "name")
+```
+
+## Grid plots with SAC metrics
+
+-   Function: plotting grids with SAC
+
+```{r}
+#| label: function-sac-grid-plots
+#| message: false
+#| warning: false
+
+### Function to plot grid with SAC data 
+plot.grid <- function(sf_list, jc_metrics, i, color_grid) {
+  
+  out_list <- vector("list", length = length(sf_list))
+  names(out_list) <- names(sf_list)
+  
+  for(i in seq_along(sf_list)) {
+    sf_object <- sf_list[[i]]
+    jc_result <- jc_metrics[[i]]
+    
+    # Extract relevant join count metrics
+    jc_statistic_pres <- jc_result$jc_statistic_pres
+    jc_diff_pres <- jc_result$jc_diff_pres
+    jc_zscore_pres <- jc_result$jc_zscore_pres
+    
+    # Subtitle with JC metrics of presences
+    subtitle <- bquote(
+      bold("JC")* "=" * .(round(jc_statistic_pres, 2)) * "; " * 
+        bold("Z") * "=" * .(round(jc_zscore_pres, 2)) * "; " * 
+        bold("JCD") * "=" * .(round(jc_diff_pres, 2)))
+
+
+    # Plot
+    out_list[[i]] <- ggplot(sf_object) +
+      geom_sf(aes(fill = factor(presence))) +
+      scale_fill_manual(values = c("0" = "transparent", "1" = color_grid[i]), 
+                        name = "Presence") +
+      theme_minimal() +
+      labs(caption = subtitle) +
+      theme(
+        plot.caption = element_text(size = 9, hjust = 0.5),  
+        legend.position = "none",
+        axis.text.x = element_blank(), 
+        axis.text.y = element_blank(),  
+        panel.grid = element_blank(),   
+        plot.margin = margin(3, 3, 3, 3, "pt")  
+    )
+  }
+  return(out_list)
+}
+```
+
+-   Generating grid plots
+
+```{r}
+#| label: grid-plots-sac
+#| message: false
+#| warning: false
+
+
+### Grid plots with SAC values Figure 1
+grid_occ_list <- plot.grid(sf_grid_occ_list, 
+                           sac_occ_list, 
+                           color_grid = pal_occupancy)
+
+### Grid plots with SAC values Figure 2
+grid_grain_list <- plot.grid(sf_grid_grain_list,
+                             sac_grain_list,
+                             color_grid = pal_grain)
+```
+
+## Barplots
+
+Barplots of the SAC metrics of our grids. Two desired outputs:
+
+1.  Fig. 1: SAC in time (aggregation vs. occupancy)
+2.  Fig. 2: SAC across grain sizes (presence arrangement vs. grain size)
+
+-   Function to select the adequate scenarios for the barplots
+
+```{r}
+#| label: barplot-selection-function
+#| message: false
+#| warning: false
+
+### Function to filter groups based on type of occupancy or grain
+filter.groups <- function(df, id_column, pattern, levels) {
+  df %>%
+    filter(grepl(pattern, .[[id_column]])) %>%
+    mutate(across(all_of(id_column), ~ factor(., levels = levels)))
+}
+```
+
+#### Figure 1
+
+-   Function for Fig.1 barplots
+
+```{r}
+#| label: barplots-fig1-function
+#| message: false
+#| warning: false
+
+# Function for Figure 1 barplots
+plot.bar.jc.fig1 <- function(occ_df, color_bar, y_lim, x_lab) {
+  ggplot(occ_df, aes(x = name_label, y = jc_diff_pres, fill = name)) +
+    geom_bar(stat = "identity", color = color_bar, width = 0.6) +
+    ylim(y_lim[1], y_lim[2]) +
+    scale_fill_manual(values = color_bar) +
+    geom_hline(yintercept = 0, color = "black", linetype = "dashed") +
+    theme_classic() +
+    theme(legend.position = "none", 
+          axis.title.x = element_text(size = 9),
+          axis.text.x = element_text(size = 9),
+          axis.title.y = element_text(size = 9),
+          axis.text.y = element_text(size = 9)) + 
+    xlab(x_lab) +
+    ylab("JCD") 
+}
+```
+
+-   Define patterns of percentage of occupancy and level of aggregation
+
+```{r}
+#| label: barplots-fig1-aggrupations
+#| message: false
+#| warning: false
+
+
+# 1. Occupancy patterns
+patterns_occ <- c("_25$", "_50$", "_75$")
+levels_occ <- list(c("sep_25", "mid_25", "join_25"),
+                   c("sep_50", "mid_50", "join_50"),
+                   c("sep_75", "mid_75", "join_75"))
+col_occ_list <- list(pal_occupancy[1:3], 
+                     pal_occupancy[4:6], 
+                     pal_occupancy[7:9])
+
+
+# 2. Aggregation patterns
+patterns_agg <- c("^sep_", "^mid_", "^join_")
+levels_agg <- list(c("sep_25", "sep_50", "sep_75"),
+                   c("mid_25", "mid_50", "mid_75"),
+                   c("join_25", "join_50", "join_75"))
+col_agg_list <- list(pal_occupancy[c(1,4,7)], 
+                     pal_occupancy[c(2,5,8)], 
+                     pal_occupancy[c(3,6,9)])
+```
+
+-   Plot Fig. 1 barplots
+
+```{r}
+#| label: barplots-fig1-plot
+#| message: false
+#| warning: false
+
+
+# y-axis limits
+y_lim_1 <- c(min(sac_occ_df$jc_diff_pres, na.rm = T), 
+             max(sac_occ_df$jc_diff_pres, na.rm = T))
+
+
+### Occupancy vs SAC diff joincount barplots 
+
+# 1. Occupancy percentage
+barplot_jc_occ_perc_list <- list()
+
+for(i in seq_along(patterns_occ)) {
+  barplot_df <- filter.groups(sac_occ_df, "name", patterns_occ[[i]], levels_occ[[i]]) %>% 
+    mutate(name_label = factor(
+      case_when(str_starts(name, "sep") ~ "low",
+                str_starts(name, "mid") ~ "mid",
+                str_starts(name, "join") ~ "high"),
+      levels = c("low", "mid", "high"))
+      ) 
+  
+  barplot_jc_occ_perc_list[[i]] <- plot.bar.jc.fig1(
+    barplot_df, col_occ_list[[i]], y_lim = y_lim_1, x_lab = "Aggregation"
+    )
+  
+  names(barplot_jc_occ_perc_list)[i] <- paste0("occupancy", gsub("\\$$", "", patterns_occ[i]))
+  
+}
+
+
+# 2. Aggregation level
+barplot_jc_occ_agg_list <- list()
+
+for(i in seq_along(patterns_agg)) {
+  barplot_df <- filter.groups(sac_occ_df, "name", patterns_agg[[i]], levels_agg[[i]]) %>% 
+    mutate(name_label = factor(
+      paste0(str_split(name, "_", simplify = T)[,2], "%"),
+      levels = c("25%", "50%", "75%"))
+      )
+  
+  barplot_jc_occ_agg_list[[i]] <- plot.bar.jc.fig1(
+    barplot_df, col_agg_list[[i]], y_lim = y_lim_1, x_lab = "Occupancy"
+    )
+  names(barplot_jc_occ_agg_list)[i] <- paste0("aggregation_", gsub("^\\^|_$", "", patterns_agg[i]))
+}
+```
+
+#### Figure 2
+
+-   Function for Fig. 2 barplots
+
+```{r}
+#| label: barplots-fig2-function
+#| message: false
+#| warning: false
+
+
+# Function for Figure 2 barplots
+plot.bar.jc.grain <- function(occ_df, color_bar, y_lim, x_lab) {
+  ggplot(occ_df, aes(x = name_label, y = jc_diff_pres, fill = name, width = bar_width)) +
+    geom_bar(stat = "identity", color = color_bar) +
+    ylim(y_lim[1], y_lim[2]) +
+    scale_fill_manual(values = color_bar) +
+    geom_hline(yintercept = 0, color = "black", linetype = "dashed") +
+    theme_classic() +
+    theme(legend.position = "none", 
+          axis.title.x = element_blank(),
+          axis.text.x = element_text(size = 9, angle = 45, hjust = 1),
+          axis.title.y = element_text(size = 9),
+          axis.text.y = element_text(size = 9)) + 
+    xlab(x_lab) +
+    ylab("JCD")
+}
+```
+
+-   Define patterns of presence disposition and grain size
+
+```{r}
+#| label: barplots-fig2-aggrupations
+#| message: false
+#| warning: false
+
+## Define patterns of disposition and grain size
+# 1. Disposition patterns
+patterns_disp <- list("^edges_", "^side_", "^center_", "^disperse_")
+levels_disp <- list(c("edges_fine", "edges_coarse"),
+                    c("side_fine", "side_coarse"),
+                    c("center_fine", "center_coarse"),
+                    c("disperse_fine", "disperse_coarse"))
+col_disp_list <- list(pal_grain[c(1,5)], 
+                      pal_grain[c(2,6)], 
+                      pal_grain[c(3,7)], 
+                      pal_grain[c(4,8)])
+
+# 2. Grain size pattern
+patterns_grain <- list("_fine$", "_coarse$")
+levels_grain <- list(c("edges_fine", "side_fine", "center_fine", "disperse_fine"),
+                     c("edges_coarse", "side_coarse", "center_coarse",
+                       "disperse_coarse"))
+col_grain_list <- list(pal_grain[c(1:4)], 
+                       pal_grain[c(5:8)])
+```
+
+-   Plot Fig. 2 barplots
+
+```{r}
+#| label: barplots-fig2-plot
+#| message: false
+#| warning: false
+
+
+# y-axis limits for bar plots
+y_lim_2 <- c(min(sac_grain_df$jc_diff_pres, na.rm = T), 
+             max(sac_grain_df$jc_diff_pres, na.rm = T))
+
+
+### Grain size vs SAC diff joincount barplots 
+
+# 1. Grain disposition
+barplot_jc_grain_disp_list <- list()
+
+for(i in seq_along(patterns_disp)) {
+  barplot_df <- filter.groups(sac_grain_df, "name", patterns_disp[[i]], levels_disp[[i]]) %>% 
+    mutate(bar_width = ifelse(grepl("_coarse$", name), 0.9, 0.4),
+       disposition = case_when(str_starts(name, "edges") ~ "a",
+                               str_starts(name, "side") ~ "b",
+                               str_starts(name, "center") ~ "c",
+                               str_starts(name, "disperse") ~ "d"),
+       grain = str_split(name, "_", simplify = T)[,2],
+       name_label = factor(grain, levels = c("fine", "coarse")))
+  
+  barplot_jc_grain_disp_list[[i]] <- plot.bar.jc.grain(
+    barplot_df, col_disp_list[[i]],  y_lim = y_lim_2, x_lab = "Grain size"
+    )
+  names(barplot_jc_grain_disp_list)[i] <- paste0("disposition_", gsub("^\\^|_$", "", patterns_disp[i]))
+}
+
+```
+
+## Arranged figures
+
+Figures for the manuscript of the different grid dispositions, their respective diff join count and join count p values, as well as the barplots of the diff join count values.
+
+#### Fig. 1: Occupancy vs. SAC
+
+```{r}
+#| label: arranged-fig1
+#| message: false
+#| warning: false
+
+
+# Barplot occupancy plot
+barplot_jc_occ_fig_list <- list(grid_occ_list$sep_25,
+                                grid_occ_list$sep_50,
+                                grid_occ_list$sep_75,
+                                barplot_jc_occ_agg_list$aggregation_sep,
+                                grid_occ_list$mid_25,
+                                grid_occ_list$mid_50,
+                                grid_occ_list$mid_75,
+                                barplot_jc_occ_agg_list$aggregation_mid,
+                                grid_occ_list$join_25,
+                                grid_occ_list$join_50,
+                                grid_occ_list$join_75,
+                                barplot_jc_occ_agg_list$aggregation_join,
+                                barplot_jc_occ_perc_list$occupancy_25,
+                                barplot_jc_occ_perc_list$occupancy_50,
+                                barplot_jc_occ_perc_list$occupancy_75)
+bar_jc_occ_fig <- grid.arrange(grobs = barplot_jc_occ_fig_list, ncol = 4)
+```
+
+#### Fig. 2: Grain vs. SAC
+
+```{r}
+#| label: arranged-fig2
+#| message: false
+#| warning: false
+
+# Barplot grain plot
+barplot_jc_grain_fig_list <- list(grid_grain_list$edges_fine,
+                                  grid_grain_list$side_fine,
+                                  grid_grain_list$center_fine,
+                                  grid_grain_list$disperse_fine,
+                                  grid_grain_list$edges_coarse,
+                                  grid_grain_list$side_coarse,
+                                  grid_grain_list$center_coarse,
+                                  grid_grain_list$disperse_coarse,
+                                  barplot_jc_grain_disp_list$disposition_edges,
+                                  barplot_jc_grain_disp_list$disposition_side,
+                                  barplot_jc_grain_disp_list$disposition_center,
+                                  barplot_jc_grain_disp_list$disposition_disperse)
+bar_jc_grain_fig <- grid.arrange(grobs = barplot_jc_grain_fig_list, ncol = 4)
+```
+
+-   Saving outputs
+
+```{r}
+#| label: save-figs
+#| message: false
+#| warning: false
+
+# Fig. 1
+ggsave(file.path(paths$figure_path, "fig1_sacocc1.png"), 
+       plot = bar_jc_occ_fig,  width = 7, height = 5, dpi = 600, bg="white")
+
+# Fig. 2
+ggsave(file.path(paths$figure_path, "fig2_sacgrain1.png"), 
+       plot = bar_jc_grain_fig, width = 8, height = 5, dpi = 600, bg="white")
+```

@@ -1,0 +1,165 @@
+---
+title: "04_derived_metrics"
+author: "Carmen Soria"
+format: html
+editor: visual
+---
+
+# Calculating derived metrics
+
+Number of species per cell in each combination of region, scale, and period
+
+### Libraries
+
+```{r}
+#| label: libraries
+#| message: false
+#| warning: false
+
+pacman::p_load(tidyverse, here)
+```
+
+### Directory variables
+
+```{r}
+#| label: directory-variables
+#| message: false
+#| warning: false
+
+# File with paths
+source(file.path(here(), "codes", "00_config_file.R"))
+```
+
+### Loading data
+
+```{r}
+#| label: load-data
+#| message: false
+#| warning: false
+
+data_tbl <- readRDS(file.path(paths$output_path, "species_filtered.rds"))
+```
+
+## Richness
+
+Richness in each cell for each combination of study area, period and grain size
+
+```{r}
+#| label: calculate-richness-tbl
+#| message: false
+#| warning: false
+
+# Obtain richness
+richness_tbl <- data_tbl %>% 
+  group_by(datasetID, scalingID, siteID, startYear, endYear, samplingPeriodID) %>% 
+  summarise(richness = n_distinct(scientificName))
+
+# Ensuring the number of rows is consistent
+nrow(richness_tbl) == nrow(data_tbl %>% select(datasetID, scalingID, siteID, startYear) %>% unique())
+```
+
+Saving richness
+
+```{r}
+#| label: save-richness
+#| message: false
+#| warning: false
+
+saveRDS(richness_tbl, file.path(paths$output_path, "richness_table.rds"))
+```
+
+Number of species per atlas region and atlas region x period
+
+```{r}
+#| label: total-species-region-period
+#| message: false
+#| warning: false
+
+## Total number of species per region
+total_region_tbl <- data_tbl %>% 
+  group_by(datasetID) %>% 
+  summarise(richness = n_distinct(scientificName))
+
+## Number of species per atlas region and period
+total_period_tbl <- data_tbl %>% 
+  group_by(datasetID, startYear, endYear, samplingPeriodID) %>% 
+  summarise(richness = n_distinct(scientificName))
+```
+
+Saving
+
+```{r}
+#| label: save-richness-metrics
+#| message: false
+#| warning: false
+
+
+# Richness per region
+write.csv(total_region_tbl, file.path(paths$output_path, "richness_region.csv"))
+
+# Richness per region x period
+write.csv(total_period_tbl, file.path(paths$output_path, "richness_period.csv"))
+```
+
+## Occupancy
+
+Occupancy of each species for each combination of study area, period and grain size
+
+```{r}
+#| label: calculate-occupancy
+#| message: false
+#| warning: false
+
+# Total number of cells 
+total_occ_tbl <- data_tbl %>% 
+  select(datasetID, scalingID, siteID, area, croppedArea) %>% 
+  distinct() %>% 
+  group_by(datasetID, scalingID) %>% 
+  summarise(totalCells = n_distinct(siteID),
+            totalArea = sum(area),
+            totalCroppedArea = sum(croppedArea)) %>% 
+  ungroup()
+
+# Calculating species level occupancy
+occ_tbl <- data_tbl %>% 
+  group_by(datasetID, scalingID, startYear, endYear, samplingPeriodID, scientificName) %>% 
+  summarise(occCells = n_distinct(siteID),
+            occArea = sum(area),
+            occCroppedArea = sum(croppedArea)) %>% 
+  ungroup() %>% 
+  left_join(total_occ_tbl) %>% 
+  mutate(percentageOcc = round((occCells / totalCells) * 100, 2))
+
+# Ensuring the number of rows is consistent
+nrow(occ_tbl) == nrow(data_tbl %>% select(datasetID, scalingID, startYear, scientificName) %>% unique())
+```
+
+Saving occupancy
+
+```{r}
+#| label: save_output
+#| message: false
+#| warning: false
+
+saveRDS(occ_tbl, file.path(paths$output_path, "occupancy_table.rds"))
+```
+
+## Area
+
+Area covered by the atlases
+
+```{r}
+#| label: calculate-occupancy
+#| message: false
+#| warning: false
+
+# Total area covered by the atlases
+total_area_tbl <- data_tbl %>% 
+  select(datasetID, scalingID, siteID, area, croppedArea) %>% 
+  filter(scalingID == 1) %>% 
+  distinct() %>% 
+  group_by(datasetID) %>% 
+  summarise(totalArea = sum(area),
+            totalCroppedArea = sum(croppedArea)) %>% 
+  ungroup()
+```

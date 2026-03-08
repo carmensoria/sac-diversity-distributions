@@ -1,0 +1,917 @@
+---
+title: "09_analyses_sac_occ"
+author: "Carmen Soria"
+format: html
+editor: visual
+---
+
+# Joint change of SAC and OCC (all BBAs)
+
+-   Calculating log ratios of changes in the observed Join Count statistic, the expected Join count statistic and species occupancy.
+
+-   Classifying combined log ratio of the Join count statistic and occupancy, using the linear regression of the log ratio of expected join count as a function of the log ratio of occupancy:
+
+    -   Q1: temporal decrease in occupancy and increase in observed join count
+
+    -   Q2: temporal increase in both and the observed join count is higher than expected for that change in occupancy.
+
+    -   Q3: temporal increase in both and the observed join count is lower than expected for that change in occupancy.
+
+    -   Q4: temporal increase in occupancy and decrease in observed join count
+
+    -   Q5: temporal decrease in both and the observed join count is lower than expected for that change in occupancy.
+
+    -   Q6: temporal decrease in both and the observed join count is higher than expected for that change in occupancy.
+
+    -   No change: no temporal change in both occupancy and occupancy
+
+    -   Positive infinite: from zero to at least one join
+
+    -   Negative infinite: from at least one join to zero joins
+
+    -   Change in SAC with no change in OCC: moving along the y axis
+
+    -   Change in OCC independent of change in SAC: moving along the x axis
+
+-   For each area: plotting log ratio of the join count statistic against the log ratio of occupancy, marking and coloring the quadrants and assigning a point size based on grain size.
+
+-   For each area: bar plots of the proportion of species that fall in each quadrant for each grain size .
+
+### Libraries
+
+```{r}
+#| label: libraries
+#| message: false
+#| warning: false
+
+pacman::p_load(tidyverse, sf, viridis, gridExtra, grid, cowplot, here)
+```
+
+### Directories
+
+```{r}
+#| label: directory-variables
+#| message: false
+#| warning: false
+
+# File with paths
+source(file.path(here(), "codes", "00_config_file.R"))
+```
+
+### Variables
+
+```{r}
+#| label: variables
+#| message: false
+#| warning: false
+
+# Quadrant colours
+quadrant_col <- c("Q1" = "#FEE090","Q2" = "#FC8D59", "Q3" = "#D73027", 
+                  "Q4" = "#87cfc7", "Q5" = "#2e78a0", "Q6" = "#09177e",
+                  "No change" = "#4A4A4A", 
+                  "Pos. Infinite" = "#F0C24E", "Neg. Infinite" = "#B28300",
+                  "Change JC" = "#8A5AC7", "Change OCC" = "#C8A5F0",
+                  "Equal" = "#ff499e")
+
+# Palette atlas regions
+region_col <-  c("Czechia" = "#4477AA", "Europe" = "#EE6677", "New York" = "#228833", "Japan" = "#CCBB44")
+
+## Atlas region labels for GridExtra plots
+aos_labels <- list(
+  textGrob("Czechia", gp = gpar(fontsize = 11, fontface = "bold")),
+  textGrob("Europe", gp = gpar(fontsize = 11, fontface = "bold")),
+  textGrob("New York", gp = gpar(fontsize = 11, fontface = "bold")),
+  textGrob("Japan", gp = gpar(fontsize = 11, fontface = "bold"))
+)
+```
+
+### Load data
+
+```{r}
+#| label: load-data
+#| message: false
+#| warning: false
+
+
+# Species
+data_species <- read.csv(file.path(paths$output_path, "sac_species_table.csv")) %>%
+  dplyr::select(-X) %>% 
+  mutate(
+    datasetID = factor(datasetID, 
+                       levels = c("Czechia", "Europe", "New York", "Japan")),
+    cellSide = case_when(
+      datasetID == "Czechia" ~ scalingID * 11, # Cell side = 11 km
+      datasetID == "Europe" ~ scalingID * 50, # Cell side = 50 km
+      datasetID == "New York" ~ scalingID * 5, # Cell side = 5 km
+      datasetID == "Japan" ~ scalingID * 20, # Cell side = 50 km
+      )
+    )
+
+
+# Dataset IDs
+datasetIDs <- unique(data_species$datasetID)
+```
+
+### Log ratios and quadrant assignment
+
+-   Function to calculate log ratios for each datasetID
+
+```{r}
+#| label: function-logratios
+#| message: false
+#| warning: false
+
+
+# Function to calculate log ratios for each dataset ID
+calc.logratios <- function(dataset_name, data = data_species) {
+  change_sac_occ_df <- data %>%
+    filter(datasetID == dataset_name & !is.na(jcStatistic)) %>% 
+    group_by(datasetID, scalingID, scientificName) %>%
+    mutate(nPeriods = n()) %>% 
+    ungroup() %>% 
+    filter(nPeriods >= 2) %>% 
+    group_by(scientificName, scalingID, cellSide) %>% 
+    mutate(firstPeriod = min(samplingPeriodID),
+           lastPeriod = max(samplingPeriodID)) %>% 
+    dplyr::summarise(
+      datasetID = unique(datasetID),
+      firstJCStat = jcStatistic[samplingPeriodID == firstPeriod],
+      lastJCStat = jcStatistic[samplingPeriodID == lastPeriod],
+      logratioJCStat = log(lastJCStat / firstJCStat),
+      firstJCExp = jcExpectation[samplingPeriodID == firstPeriod],
+      lastJCExp = jcExpectation[samplingPeriodID == lastPeriod],
+      logratioJCExp = log(lastJCExp / firstJCExp),
+      firstOcc = occCells[samplingPeriodID == firstPeriod],
+      lastOcc = occCells[samplingPeriodID == lastPeriod],
+      logratioOcc = log(lastOcc / firstOcc),
+      nPeriods = unique(nPeriods),
+      .groups = "drop"
+    ) %>% 
+    mutate(quadrant = case_when(
+      firstJCStat == lastJCStat & firstOcc == lastOcc ~ "No change",
+      firstJCStat == 0 & lastJCStat != 0 ~ "Pos. Infinite",
+      firstJCStat != 0 & lastJCStat == 0 ~ "Neg. Infinite",
+      firstJCStat == lastJCStat & firstOcc != lastOcc ~ "Change OCC",
+      firstJCStat != lastJCStat & firstOcc == lastOcc ~ "Change JC",
+      logratioJCStat == logratioJCExp ~ "Equal",
+      logratioJCStat < 0 & logratioOcc < 0 & logratioJCStat > logratioJCExp ~ "Q1",
+      logratioJCStat > 0 & logratioOcc < 0 ~ "Q2",  
+      logratioJCStat > 0 & logratioOcc > 0 & logratioJCStat > logratioJCExp ~ "Q3",
+      logratioJCStat > 0 & logratioOcc > 0 & logratioJCStat < logratioJCExp ~ "Q4",
+      logratioJCStat < 0 & logratioOcc > 0 ~ "Q5",  
+      logratioJCStat < 0 & logratioOcc < 0 & logratioJCStat < logratioJCExp ~ "Q6"
+      
+    )) %>% 
+    unique() # Remove duplicate rows which are repeated years
+  
+  return(change_sac_occ_df)
+}
+```
+
+-   Calculating log ratios
+
+```{r}
+#| label: calculating-logratios
+#| message: false
+#| warning: false
+
+
+# List of tables with all logratios
+occ_change_df_list <- purrr::map(datasetIDs, calc.logratios)
+occ_change_df_list <- setNames(occ_change_df_list, datasetIDs)
+
+
+# Unique log ratio table
+jcocc_data_df <- bind_rows(occ_change_df_list) %>% 
+  select(datasetID, scalingID, cellSide, scientificName, 
+         firstJCStat, lastJCStat, logratioJCStat, 
+         firstJCExp, lastJCExp, logratioJCExp, 
+         firstOcc, lastOcc, logratioOcc, nPeriods, quadrant)
+
+# Removing list
+rm(occ_change_df_list)
+```
+
+-   Summary of percentage of species increasing SAC and Occupancy
+
+```{r}
+#| label: summary-logratios
+#| message: false
+#| warning: false
+
+# Summary across grain sizes
+jcocc_summary_df <- jcocc_data_df %>% 
+  filter(is.finite(logratioJCStat)) %>%
+  group_by(datasetID, cellSide) %>% 
+  summarise(meanLogratioOcc = mean(logratioOcc),
+            sdLogratioOcc = sd(logratioOcc),
+            median_logratio_occ = median(logratioOcc),
+            increasing_occ_perc = sum(logratioOcc > 0) / n_distinct(scientificName) * 100,
+            decreasing_occ_perc = sum(logratioOcc < 0)/ n_distinct(scientificName) * 100,
+            mean_logratio_jcstat = mean(logratioJCStat),
+            sd_logratio_jcstat = sd(logratioJCStat),
+            median_logratio_jcstat = median(logratioJCStat),
+            increasing_jcstat_perc = sum(logratioJCStat > 0) / n_distinct(scientificName) * 100,
+            decreasing_jcstat_perc = sum(logratioJCStat < 0)/ n_distinct(scientificName) * 100,
+            .groups = "drop"
+            )
+```
+
+-   Save tables
+
+```{r}
+#| label: save-logratios
+#| message: false
+#| warning: false
+
+# Saving
+write.csv(jcocc_data_df, file.path(paths$output_path, "logratio_jcocc.csv"))
+write.csv(jcocc_summary_df, file.path(paths$output_path, "summary_logratio_jcocc.csv"))
+
+rm(jcocc_summary_df)
+```
+
+### Linear models
+
+Linear models of logratioJCStat \~ logratioOcc and logratioJCExp \~ logratioOcc. Calculating the lm of the logratioJCExp just to ensure that the changes in occupancy are behind changes in the expected logratio (i.e., R-squared of \~1).
+
+-   Function
+
+```{r}
+#| label: function-lm-sacocc
+#| message: false
+#| warning: false
+
+
+# Function to fit linear models for each dataset ID
+fit.lm <- function(dataset_name, data = jcocc_data_df) {
+  
+  # Filtering logratio data by dataset
+  data_lm <- data %>% 
+    filter(datasetID == dataset_name)
+
+  
+  # Fit linear models grouped by cell side (grain size)
+  result_lm <- data_lm %>% 
+    group_by(cellSide) %>%
+    do({
+      # Filter out infinite values of log ratios
+      noinf_jcstat <- filter(., is.finite(logratioJCStat))
+      noinf_jcexp <- filter(., is.finite(logratioJCExp))
+      
+      # Fitting models
+      lm_jcstat <- lm(logratioJCStat ~ logratioOcc, data = noinf_jcstat)
+      lm_jcexp <- lm(logratioJCExp ~ logratioOcc, data = noinf_jcexp)
+      
+      # Extract summary statistics for each grain size
+      data.frame(
+        datasetID = unique(.$datasetID),
+        cellSide = unique(.$cellSide),
+        
+        # For observed Join Count (jcstat)
+        RsquaredJCStat = summary(lm_jcstat)$r.squared,
+        PValJCStat = summary(lm_jcstat)$coefficients[2, 4], 
+        SlopeJCStat = summary(lm_jcstat)$coefficients[2, 1], 
+        InterceptJCStat = summary(lm_jcstat)$coefficients[1, 1], 
+
+        # For expected Join Count (jcexp)
+        RsquaredJCExp = summary(lm_jcexp)$r.squared,
+        PValJCExp = summary(lm_jcexp)$coefficients[2, 4], 
+        SlopeJCExp = summary(lm_jcexp)$coefficients[2, 1], 
+        InterceptJCExp = summary(lm_jcexp)$coefficients[1, 1] 
+      )
+    })
+  
+  return(result_lm)
+}
+```
+
+-   Calculating linear models
+
+```{r}
+#| label: calculating-lm
+#| message: false
+#| warning: false
+
+# Use map to apply the function to each dataset ID
+lm_list <- purrr::map(datasetIDs, fit.lm)
+lm_list <- setNames(lm_list, datasetIDs)
+
+# All in a table
+lm_df <- bind_rows(lm_list)
+
+# Removing the list
+rm(lm_list)
+```
+
+-   Make plot of change in slope of the logratioJCStat \~ logratioOcc
+
+```{r}
+#| label: plot-slope-jcocc-grain
+#| message: false
+#| warning: false
+
+ps8_slopes <- ggplot(data = lm_df, 
+                     aes(x = cellSide, y = SlopeJCStat, 
+                         color = datasetID, group = datasetID)) + 
+  geom_line(size = 1) +
+  geom_point(size = 1.5) +
+  scale_x_log10() +
+  scale_color_manual(values = region_col, name = "Dataset") +
+  labs(x = "Grid resolution (km)", y = "Slope logratioJC ~ logratioOcc") +
+  theme_classic() +
+  theme(legend.title = element_blank(),
+        legend.text = element_text(size = 12),
+        legend.position = c(0.93, 0.9),
+        legend.spacing.y = unit(0.1, "cm"),
+        legend.key.size = unit(0.2, "cm"),
+        legend.margin = margin(0, 0, 0, 0),
+        plot.margin = margin(t = 5, r = 15, b = 5, l = 5),
+        axis.title.x = element_text(size = 12),
+        axis.text.x = element_text(size = 10),
+        axis.title.y = element_text(size = 12),
+        axis.text.y = element_text(size = 10))
+
+# Print
+print(ps8_slopes)
+```
+
+-   Saving
+
+```{r}
+#| label: save-lm
+#| message: false
+#| warning: false
+
+# Saving
+write.csv(lm_df, file.path(paths$output_path, "summary_lm_jcocc.csv"))
+
+# Save plot
+ggsave(plot = ps8_slopes, width = 5, height = 6, dpi = 300, 
+       file.path(paths$figure_path,
+                 "ps8_logratio_slopes.png"))
+```
+
+### Number and proportion of species per quadrant
+
+-   Calculating
+
+```{r}
+#| label: calc-species-quadrant-count
+#| message: false
+#| warning: false
+
+# Number of species per dataset and grain size
+distinct_sp_df <- jcocc_data_df %>% 
+  group_by(datasetID, cellSide, scalingID) %>% 
+  summarise(totalSp = n_distinct(scientificName), .groups = "drop")
+
+# Number of species in each logratio quadrant
+quadrant_counts_df <- jcocc_data_df %>% 
+  group_by(datasetID, cellSide, scalingID, quadrant) %>% 
+  summarise(countQ = n(), .groups = "drop") %>% 
+  left_join(distinct_sp_df) %>% 
+  mutate(percentageSp = (countQ / totalSp) * 100,
+         quadrant = factor(quadrant, levels = c(
+           "Q1", "Q2", "Q3", "Q4", "Q5", "Q6", 
+           "No change", "Change OCC", "Change JC",
+           "Pos. Infinite", "Neg. Infinite", "Equal"))) %>% 
+  mutate(quadrantGroup = case_when(
+    quadrant %in% c("Q1", "Q2", "Q3") ~ "Overaggregation",
+    quadrant %in% c("Q4", "Q5", "Q6") ~ "Overdispersion",
+    quadrant %in% c("Pos. Infinite", "Neg. Infinite") ~ "Infinite",
+    quadrant %in% c("Change JC", "Change OCC") ~ "Independent",
+    TRUE ~ quadrant
+    )) %>%
+  mutate(quadrantGroup = factor(quadrantGroup, levels = c(
+    "Overaggregation",
+    "Overdispersion",
+    "Independent",
+    "Infinite",
+    "No change",
+    "Equal"
+    )))
+
+
+# Grouping Q2 and Q3 (increase in both) and Q5 and Q6 (decrease in both)
+quadrant_counts_group_df <- quadrant_counts_df %>% 
+  mutate(quadrantSum = case_when(
+    quadrant %in% c("Q3", "Q4") ~ "Inc. both",
+    quadrant %in% c("Q6", "Q1") ~ "Dec. both",
+    TRUE ~ quadrant
+  )) %>% 
+  group_by(datasetID, cellSide, quadrantSum) %>% 
+  summarise(
+    count = sum(countQ),
+    totalSp = unique(totalSp),
+    percentageSp = sum(percentageSp),
+    .groups = "drop"
+  )
+
+
+# Getting the weighted mean of increase in both and decrease in both
+weighted_q_means <- quadrant_counts_group_df %>% 
+  group_by(quadrantSum) %>% 
+  summarise(weighted_mean = sum(count) / sum(totalSp) * 100)
+```
+
+-   Check: percentage sum per datasetID and scaling
+
+```{r}
+#| label: checks-species-quadrant-count
+#| message: false
+#| warning: false
+
+# Is the sum 100%?
+quadrant_counts_df %>% 
+  group_by(datasetID, cellSide) %>% 
+  summarise(sumperc = round(sum(percentageSp),3), .groups = "drop") %>% 
+  select(-datasetID, -cellSide) %>% 
+  unique() %>% 
+  pull() # Yes!
+
+# Is the sum 100%?
+quadrant_counts_group_df %>% 
+  group_by(datasetID, cellSide) %>% 
+  summarise(sumperc = round(sum(percentageSp),3), .groups = "drop") %>% 
+  select(-datasetID, -cellSide) %>% 
+  unique() %>% 
+  pull() # Yes!
+```
+
+-   Saving
+
+```{r}
+#| label: save-species-quadrant-count
+#| message: false
+#| warning: false
+
+# Summary of the counts (n of species) per quadrant
+write.csv(quadrant_counts_df, file.path(paths$output_path, "quadrant_jcocc.csv"))
+
+# Summary of the counts (n of species) per quadrant summing Q3 and Q4 and Q6 and Q1
+write.csv(quadrant_counts_group_df, file.path(paths$output_path, "quadrant_jcocc_grouped.csv"))
+```
+
+### Scatterplots logratio SAC against logratio OCC
+
+-   Function to plot scatterplot
+
+```{r}
+#| label: logratio-sac-occ-scatterplot
+#| message: false
+#| warning: false
+
+plot.p6 <- function(dataset_name, data = jcocc_data_df) {
+  
+  data <- data %>% 
+    filter(datasetID == dataset_name &
+             !quadrant %in% c("Pos. Infinite", "Neg. Infinite", "No change"))
+  
+  scaling_levels <- n_distinct(data$cellSide)
+  
+  ncols <- ifelse(scaling_levels > 3, 2, 1)
+  
+  p6 <- ggplot(data, aes(x = logratioOcc, y = logratioJCStat)) +
+    geom_hline(yintercept = 0, color = "black") +
+    geom_vline(xintercept = 0, color = "black") +
+    geom_point(aes(size = factor(cellSide), color = quadrant), pch = 16, alpha = 0.4) +
+    scale_size_manual(values = seq(2, 2 + 1.5 * (scaling_levels - 1), by = 1),
+                      name = "Cell side (km)",
+                      labels = paste0(unique(data$cellSide), " km")) +
+    scale_color_manual(values = quadrant_col, guide = "none") +
+    geom_smooth(aes(x = logratioOcc, y = logratioJCExp), 
+                method = "lm", color = "black", 
+                linetype = "dashed", se = FALSE, fullrange = TRUE, linewidth = 0.7) +
+    scale_y_continuous(labels = scales::label_number(accuracy = 0.1, trim = TRUE, drop0trailing = TRUE)) +
+    labs(x = "Log ratio of occupancy change",
+         y = "Log ratio of JC change") +
+    guides(size = guide_legend(ncol = ncols)) +
+    theme_minimal() +
+    theme(
+      panel.grid = element_blank(), 
+      legend.title = element_blank(),
+      legend.text = element_text(size = 6),
+      legend.key.size = unit(0.2, "cm"), 
+      legend.spacing = unit(0.2, "cm"), 
+      legend.position = c(0.95, 0.01),   # bottom right
+      legend.justification = c(1, 0),    # anchor bottom right
+      axis.title.x = element_text(size = 9),
+      axis.text.x = element_text(size = 7), 
+      axis.title.y = element_text(size = 9),
+      axis.text.y = element_text(size = 7)
+    )
+  
+  return(p6)
+}
+```
+
+-   Scatterplot list
+
+```{r}
+#| label: plot-logratio-sac-occ-scatterplot
+#| message: false
+#| warning: false
+
+# Use map to apply the function to each dataset ID
+p6_list <- purrr::map(datasetIDs, plot.p6)
+p6_list <- setNames(p6_list, datasetIDs)
+```
+
+-   Scatterplot grid arrangement
+
+```{r}
+#| label: logratio-scatterplot-arrangement
+#| message: false
+#| warning: false
+#| include: false
+
+
+# Grid arrangement
+p6_plot <- grid.arrange(
+  arrangeGrob(aos_labels[[1]], p6_list$Czechia,
+              ncol = 1, heights = c(0.1, 3)),
+  arrangeGrob(aos_labels[[2]], p6_list$Europe, 
+              ncol = 1, heights = c(0.1, 3)),
+  arrangeGrob(aos_labels[[3]], p6_list$`New York`,
+              ncol = 1, heights = c(0.1, 3)),
+  arrangeGrob(aos_labels[[4]], p6_list$Japan, 
+              ncol = 1, heights = c(0.1, 3)),
+  ncol = 2, nrow = 2, widths = c(1, 1), heights = c(1, 1)
+)
+```
+
+-   Saving
+
+```{r}
+#| label: save-sac-occ-scatterplot
+#| message: false
+#| warning: false
+
+
+ggsave(plot = p6_plot, dpi = 600, width = 6, height = 6.2,
+       file.path(paths$figure_path,
+                 "p6_scatterplot.png"))
+```
+
+-   Percentage of no change per dataset (added manually to figure)
+
+```{r}
+#| label: logratio-sac-occ-nochange
+#| message: false
+#| warning: false
+
+quadrant_counts_df %>% filter(quadrant == "No change") %>% group_by(datasetID) %>% summarise(tot_nc = sum(countQ), tot_sp = sum(totalSp), perc = tot_nc / tot_sp *100)
+```
+
+### Individual scatterplots per grain size
+
+-   Function to plot scatterplot
+
+```{r}
+#| label: region-logratio-sac-occ-scatterplot
+#| message: false
+#| warning: false
+
+plot.ps36 <- function(dataset_name, data = jcocc_data_df) {
+  
+  data <- data %>% 
+    filter(datasetID == dataset_name &
+             !quadrant %in% c("Pos. Infinite", "Neg. Infinite", "No change"))
+  
+  scaling_levels <- n_distinct(data$cellSide)
+  nrow_facets <- ifelse(scaling_levels > 3, 2, 1) 
+  
+  p36_ind <- ggplot(data, aes(x = logratioOcc, y = logratioJCStat, group = cellSide)) +
+    geom_hline(yintercept = 0, color = "black") +
+    geom_vline(xintercept = 0, color = "black") +
+    geom_point(aes(color = quadrant), pch = 16, alpha = 0.4) +
+    facet_wrap(~cellSide, nrow = nrow_facets,
+               labeller = labeller(cellSide = ~ paste0(.x, " km"))) +
+    scale_color_manual(values = quadrant_col) +
+    geom_smooth(aes(x = logratioOcc, y = logratioJCExp), 
+                method = "lm", color = "black", 
+                linetype = "dashed", se = FALSE, fullrange = TRUE, linewidth = 0.5) +
+    scale_y_continuous(labels = scales::label_number(accuracy = 0.1, trim = TRUE, drop0trailing = TRUE)) +
+    labs(x = "Log ratio of occupancy change",
+         y = "Log ratio of JC change") +
+    ggtitle(dataset_name) +
+    theme_minimal() +
+    theme(
+      panel.grid = element_blank(), 
+      legend.position = "bottom",
+      legend.title = element_blank(),
+      legend.text = element_text(size = 8),
+      axis.title.x = element_text(size = 9),
+      axis.text.x = element_text(size = 7), 
+      axis.title.y = element_text(size = 9),
+      axis.text.y = element_text(size = 7),
+      plot.title = element_text(size = 11, face = "bold", hjust = 0.5)
+    ) +
+    guides(colour = guide_legend(override.aes = list(alpha = 1)))
+  
+  return(p36_ind)
+}
+```
+
+-   Run plots
+
+```{r}
+#| label: plot-region-logratio-sac-occ-scatterplot
+#| message: false
+#| warning: false
+
+# Run for each region
+ps36_list <- purrr::map(datasetIDs, plot.ps36)
+ps36_list <- setNames(ps36_list, datasetIDs)
+```
+
+-   Save plots
+
+```{r}
+#| label: save-region-logratio-sac-occ-scatterplot
+#| message: false
+#| warning: false
+
+ggsave(plot = ps36_list$Czechia, dpi = 600, width = 6, height = 3,
+       file.path(paths$figure_path,
+                 "ps3_cz.png"))
+
+ggsave(plot = ps36_list$Europe, dpi = 600, width = 6, height = 6,
+       file.path(paths$figure_path,
+                 "ps4_eu.png"))
+
+ggsave(plot = ps36_list$`New York`, dpi = 600, width = 6, height = 6,
+       file.path(paths$figure_path,
+                 "ps5_ny.png"))
+
+ggsave(plot = ps36_list$Japan, dpi = 600, width = 6, height = 6,
+       file.path(paths$figure_path,
+                 "ps6_jp.png"))
+```
+
+### Barplots logratio SAC against logratio OCC
+
+-   Function
+
+```{r}
+#| label: logratio-sac-occ-barplot
+#| message: false
+#| warning: false
+
+# Define a function to plot bar plots for each dataset ID
+plot.ps7 <- function(dataset_name, data = quadrant_counts_df) {
+  # Logratio and quadrant table for the desired dataset
+  data <- data %>% 
+    filter(datasetID == dataset_name)
+  
+  # Number of unique grain sizes in the study area
+  scaling_levels <- n_distinct(data$cellSide)
+  
+  ps7 <- ggplot(data, aes(x = quadrantGroup, y = percentageSp,
+                         fill = quadrant)) +
+    geom_bar(stat = "identity", position = "stack") +
+    scale_fill_manual(values = quadrant_col) +
+    labs(x = "Quadrant", y = "% species") +
+    theme_minimal() +
+    theme(
+      panel.grid = element_blank(),
+      legend.position = "right",
+      legend.title = element_blank(),
+      legend.text = element_text(size = 8),
+      legend.key.size = unit(0.4, "cm"),
+      axis.title.x = element_text(size = 10),
+      axis.text.x = element_blank(),
+      axis.title.y = element_text(size = 10),
+      axis.text.y = element_text(size = 9),
+      strip.background = element_rect(fill = "transparent"),
+      strip.text = element_text(face = "plain", size = 9),
+      panel.spacing = unit(0.5, "lines")
+      ) +
+    facet_wrap(~ cellSide, 
+               ncol = scaling_levels, 
+               labeller = labeller(cellSide = function(x) paste(x, "km")))
+  
+  # Extracting the legend. Then I'll use the one with more categories
+  leg <- cowplot::get_legend(ps7)
+  
+  # Remove legend
+  ps7 <- ps7 + theme(legend.position = "none")
+  
+  return(list(plot = ps7, legend = leg))
+  
+}
+```
+
+-   Barplot and legends list
+
+```{r}
+#| label: plot-logratio-sac-occ-barplot
+#| message: false
+#| warning: false
+
+# Run the function
+ps7leg_list <- purrr::map(datasetIDs, plot.ps7)
+
+# Extract the plots
+ps7_list <- map(ps7leg_list, "plot")
+# Name the elements of the plots
+ps7_list <- setNames(ps7_list, datasetIDs)
+
+# Extract the legends
+legps7_list <- map(ps7leg_list, "legend")
+# Name the elements
+legps7_list <- setNames(legps7_list, datasetIDs)
+
+rm(ps7leg_list)
+```
+
+-   Grid arrangement
+
+```{r}
+#| label: arrange-logratio-sac-occ-barplot
+#| message: false
+#| warning: false
+
+# Grid arrangement for the third set of plots (stacked barplots: occ_sac_change_plot_list_v3)
+ps7_plot <- grid.arrange(
+  arrangeGrob(aos_labels[[1]], ps7_list$Czechia,
+              ncol = 1, heights = c(0.1, 3)),
+  arrangeGrob(aos_labels[[2]], ps7_list$Europe, 
+              ncol = 1, heights = c(0.1, 3)),
+  arrangeGrob(aos_labels[[3]], ps7_list$`New York`,
+              ncol = 1, heights = c(0.1, 3)),
+  arrangeGrob(aos_labels[[4]], ps7_list$Japan, 
+              ncol = 1, heights = c(0.1, 3)),
+  ncol = 2, nrow = 2, widths = c(1, 1), heights = c(1, 1)
+    )
+
+# Adding the legend
+ps7leg_plot <- grid.arrange(
+  ps7_plot, legps7_list$`New York`,
+  ncol = 2, widths = c(4, 0.5)
+)
+```
+
+-   Saving
+
+```{r}
+#| label: save-logratio-sac-occ-barplot
+#| message: false
+#| warning: false
+
+ggsave(plot = ps7leg_plot, dpi = 300, width = 8, height = 7,
+       file.path(paths$figure_path,
+                 "ps7_barplot.png"))
+```
+
+### Changes across grain sizes per area of study
+
+Not included after first round of reviews
+
+```{r}
+#| label: logratio-sac-occ-quadrant-lineplot
+#| message: false
+#| warning: false
+
+psx_plot <- ggplot(quadrant_counts_df, aes(x = cellSide,
+                                           y = percentageSp,
+                                           color = quadrant,
+                                           group = quadrant)) +
+  geom_line(linewidth = 0.75) +
+  geom_point(size = 1.5) +
+  scale_color_manual(values = quadrant_col) +
+  labs(x = "% species", y = "grain size") +
+  theme_minimal() +
+  facet_wrap(~factor(datasetID, levels = c("Czechia", "Europe", "New York", "Japan")), scales = "free_x") +
+  theme(panel.grid = element_blank(),
+        axis.line = element_line(color = "black"))
+
+plot(psx_plot)
+```
+
+-   Saving
+
+```{r}
+#| label: save-logratio-sac-occ-quadrant-lineplot
+#| message: false
+#| warning: false
+
+ggsave(plot = psx_plot, dpi = 600, width = 5, height = 6, 
+       file.path(paths$figure_path, 
+                 "psx_lineplot.png"))
+```
+
+### Marginal histogram logratio JC and Occupancy
+
+```{r}
+#| label: function-marginal-logratios-histograms
+#| message: false
+#| warning: false
+
+plot.ps910 <- function(dataset_name, data = jcocc_data_df, variable = c("logratioJCStat", "logratioJCOcc")) {
+  obj_df <- jcocc_data_df %>% 
+    filter(datasetID == dataset_name) %>% 
+    filter(is.finite(logratioJCStat))
+  
+  scaling_levels <- length(unique(obj_df$cellSide))
+  
+  means_df <- obj_df %>%
+    group_by(cellSide) %>%
+    summarise(m = mean(.data[[variable]], na.rm = TRUE)) 
+
+  y_title <- ifelse(variable == "logratioJCStat", 
+                    "logratio JC", 
+                    "logratio Occupancy")
+  
+  hist_plot <- ggplot(data = obj_df) +
+    geom_histogram(aes(x = !!sym(variable)), fill = region_col[dataset_name]) +
+    facet_wrap(~cellSide, ncol = scaling_levels,
+               labeller = labeller(cellSide = ~ paste0(.x, " km"))) +
+    geom_vline(data = means_df, aes(xintercept = m),
+               color = "red", linetype = "dashed") +
+    geom_text(data = means_df, aes(x = m + 0.2, y = Inf, 
+                                 label = round(m, 2)), vjust = 1.5, hjust = 0, color = "black", size = 3) +
+    scale_x_continuous(labels = scales::label_number(accuracy = 0.1, trim = TRUE, drop0trailing = TRUE)) +
+    theme_classic() +
+    ggtitle(dataset_name) +
+    labs(y = y_title) +
+    theme(legend.position = "none",
+          axis.title.x = element_blank(),
+          axis.text.x = element_text(size = 7.5),
+          axis.title.y = element_text(size = 10),
+          axis.text.y = element_text(size = 7.5),
+          strip.text = element_text(size = 8),
+          panel.spacing = unit(0.5, "lines"),
+          plot.title = element_text(size = 11, face = "bold", hjust = 0.5)) 
+  
+}
+```
+
+-   Plot JCStatistic
+
+```{r}
+#| label: plot-marginal-logratioJC-histogram
+#| message: false
+#| warning: false
+
+jc_histplot_list  <- purrr::map(datasetIDs, ~ plot.ps910(.x, variable = "logratioJCStat"))
+# Naming them
+jc_histplot_list <- setNames(jc_histplot_list, datasetIDs)
+
+# Stack
+jc_histplot_fig <- plot_grid(plotlist = jc_histplot_list, ncol = 1)
+
+# Save
+ggsave(jc_histplot_fig, dpi = 600, width = 7, height = 7,
+       filename = file.path(paths$figure_path,
+                 "ps9_margjcs.png"))
+```
+
+-   Plot logratio occupancy
+
+```{r}
+#| label: plot-marginal-logratioOCC-histogram
+#| message: false
+#| warning: false
+
+
+occ_histplot_list  <- purrr::map(datasetIDs, ~ plot.ps910(.x, variable = "logratioOcc"))
+# Naming them
+occ_histplot_list <- setNames(occ_histplot_list, datasetIDs)
+
+# Stack
+occ_histplot_fig <- plot_grid(plotlist = occ_histplot_list, ncol = 1)
+
+# Save
+ggsave(occ_histplot_fig, dpi = 600, width = 6, height = 6,
+       filename = file.path(paths$figure_path,
+                 "ps10_margocc.png"))
+```
+
+-   Table of means and SD of logratios
+
+```{r}
+#| label: mean-marginal-logratios
+#| message: false
+#| warning: false
+
+mean_sd_logratios <- jcocc_data_df %>% 
+  select(datasetID, cellSide, logratioJCStat, logratioOcc) %>% 
+  filter(is.finite(logratioJCStat)) %>% 
+  group_by(datasetID, cellSide) %>% 
+  summarise(mean_logratioJCStat = round(mean(logratioJCStat),3),
+            sd_logratioJCStat = round(sd(logratioJCStat),3),
+            mean_logratioOcc = round(mean(logratioOcc),3),
+            sd_logratioOcc = round(sd(logratioOcc),3))
+```
+
+-   Save table
+
+```{r}
+#| label: save-marginal-logratios
+#| message: false
+#| warning: false
+
+write.csv(mean_sd_logratios, file.path(paths$output_path, "mean_logratios_jcocc.csv"))
+```

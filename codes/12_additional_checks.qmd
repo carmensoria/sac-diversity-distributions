@@ -1,0 +1,385 @@
+---
+title: "12_additional_checks"
+author: "Carmen Soria"
+format: html
+editor: visual
+---
+
+# Additional checks
+
+### Libraries
+
+```{r}
+#| label: libraries
+#| message: false
+#| warning: false
+
+pacman::p_load(tidyverse, sf, here, spdep, mapview)
+```
+
+### Directories
+
+```{r}
+#| label: directory-variables
+#| message: false
+#| warning: false
+
+# File with paths
+source(file.path(here(), "codes", "00_config_file.R"))
+```
+
+### Load data
+
+```{r}
+#| label: load-data
+#| message: false
+#| warning: false
+
+# Species data
+species_sac <- read.csv(file.path(paths$output_path, "sac_species_table.csv")) %>%
+  dplyr::select(-X)
+
+# Log ratio data
+jcocc_df <- read.csv(file.path(paths$output_path, "logratio_jcocc.csv")) %>% 
+  select(-X)
+
+# Richness sf
+richness_sf <- readRDS(file.path(paths$output_path, "richness_sf.rds"))
+
+# Taxonomy data
+taxonomy_df <- readRDS(file.path(paths$input_path, "taxonomy.rds"))
+
+# Original data table extracted from the db
+species_data <- readRDS(file.path(paths$input_path, "species_data.rds"))
+```
+
+## Temporal changes in occupancy
+
+```{r}
+#| label: slopes-occupancy-time
+#| message: false
+#| warning: false
+
+# Getting the slopes of occupancy against atlas period
+slopes_occ_df <- species_sac %>%
+  group_by(datasetID, scalingID) %>%
+  summarise(
+    trendOCC = round(coef(lm(occCells ~ startYear, data = cur_data()))[2], 5),
+    p_value = summary(lm(occCells ~ startYear, 
+                         data = cur_data()))$coefficients[2,4],
+    r_squared = summary(lm(occCells ~ startYear, 
+                           data = cur_data()))$r.squared,
+    se_trendOCC = summary(lm(occCells ~ startYear, 
+                            data = cur_data()))$coefficients[2,2]
+  ) %>%
+  ungroup() %>%
+  select(datasetID, scalingID, trendOCC, se_trendOCC, p_value, r_squared)
+```
+
+-   Saving
+
+```{r}
+#| label: save-slopes-occupancy-time
+#| message: false
+#| warning: false
+
+# Slope df (all)
+write.csv(slopes_occ_df, file.path(paths$output_path, "slopes_occ_df.csv"))
+```
+
+## Histograms of log ratios
+
+### Log ratio SAC
+
+One plot per datasetID and scalingID
+
+```{r}
+#| label: histograms-logratios-jc
+#| message: false
+#| warning: false
+
+# Create histograms for logratioJCStat, faceted by both datasetID and scalingID
+plot_jcs1 <- jcocc_df %>%
+  ggplot(aes(x = logratioJCStat, fill = factor(scalingID))) +
+  geom_histogram(alpha = 0.6, bins = 50) +
+  facet_grid(datasetID ~ scalingID) +  # Separate plot for each combination of datasetID and scalingID
+  labs(title = "Histogram logratio join count statistic per datasetID and scalingID",
+       x = "logratioJCStat", y = "Count", fill = "Scaling ID") +
+  theme_minimal()
+
+plot(plot_jcs1)
+```
+
+Grouping by scalingID
+
+```{r}
+#| label: histograms-logratios-jc-scalingID
+#| message: false
+#| warning: false
+
+
+# Create histograms for logratioJCStat, faceted by scalingID
+plot_jcs2 <- jcocc_df %>%
+  ggplot(aes(x = logratioJCStat, fill = factor(datasetID))) +
+  geom_histogram(alpha = 0.6, position = "identity", bins = 50) +
+  facet_wrap(~ scalingID) +
+  labs(title = "Histogram logratio join count statistic per scalingID",
+       x = "logratioJCStat", y = "Count", fill = "Scaling ID") +
+  theme_minimal()
+
+plot(plot_jcs2)
+```
+
+Saving
+
+```{r}
+#| label: save-histograms-logratios-jc
+#| message: false
+#| warning: false
+
+ggsave(plot = plot_jcs1, dpi = 300,
+       file.path(paths$figure_path,
+                 "hist_logratio_sac1.png"))
+
+ggsave(plot = plot_jcs2, dpi = 300,
+       file.path(paths$figure_path,
+                 "hist_logratio_sac2.png"))
+```
+
+### Log ratio Occupancy
+
+One plot per dataset and scalingID
+
+```{r}
+#| label: histograms-logratios-occ
+#| message: false
+#| warning: false
+
+# Create histograms for logratio occupancy, faceted by both datasetID and scalingID
+plot_occ1 <- jcocc_df %>%
+  ggplot(aes(x = logratioOcc, fill = factor(scalingID))) +
+  geom_histogram(alpha = 0.6, bins = 50) +
+  facet_grid(datasetID ~ scalingID) +  # Create a separate plot for each combination of datasetID and scalingID
+  labs(title = "Histogram logratio occupancy per datasetID and scalingID",
+       x = "logratioOcc", y = "Count", fill = "Scaling ID") +
+  theme_minimal()
+
+plot(plot_occ1)
+```
+
+Grouping by scalingID
+
+```{r}
+#| label: histograms-logratios-occ-scalingid
+#| message: false
+#| warning: false
+
+
+plot_occ2 <- jcocc_df %>% 
+  ggplot(aes(x = logratioOcc, fill = factor(datasetID))) +
+  geom_histogram(alpha = 0.6, position = "identity", bins = 50) +
+  facet_grid(~scalingID) +
+  labs(title = "Histogram logratio occupancy per dataset",
+       x = "logratioOcc", y = "Count", fill = "Scaling ID") +
+  theme_minimal()
+
+plot(plot_occ2)
+```
+
+Saving
+
+```{r}
+#| label: save-histograms-logratios-occ
+#| message: false
+#| warning: false
+
+ggsave(plot = plot_occ1, dpi = 300, 
+       file.path(paths$figure_path,
+                 "hist_logratio_occ1.png"))
+
+ggsave(plot = plot_occ2, dpi = 300, 
+       file.path(paths$figure_path,
+                 "hist_logratio_occ2.png"))
+```
+
+Removing plots
+
+```{r}
+#| label: remove-plots
+#| message: false
+#| warning: false
+
+rm(list=ls(pattern="^plot_"))
+```
+
+## Number of species for which we could obtain SAC
+
+-   Total number of species per region, period and grain size
+
+```{r}
+#| label: species-sac-number
+#| message: false
+#| warning: false
+
+sp_sac <- species_sac %>% 
+  select(datasetID, samplingPeriodID, scalingID, scientificName, jcStatistic) %>% 
+  group_by(datasetID, samplingPeriodID, scalingID) %>% 
+  summarise(nSpSac = n_distinct(scientificName[!is.na(jcStatistic)]),
+            totalSp = n_distinct(scientificName),
+            percSpSac = (nSpSac / totalSp) * 100, .groups = "drop")
+```
+
+-   Number of species for which we were able to calculate the log ratios
+
+```{r}
+#| label: species-logratio-number
+#| message: false
+#| warning: false
+
+sp_logratio <- jcocc_df %>% 
+  select(datasetID, scalingID, scientificName, logratioJCStat) %>% 
+  group_by(datasetID, scalingID) %>% 
+  summarise(nSpSac = n_distinct(scientificName))
+```
+
+-   The number of species for which we could calculate the log ratio should be species that have appeared in at least two periods of each atlas for which we could calculate the join count
+
+```{r}
+#| label: species-logratio-number-check
+#| message: false
+#| warning: false
+
+sp_twice <- species_sac %>% 
+  select(datasetID, samplingPeriodID, scalingID, scientificName, jcStatistic) %>% 
+  filter(!is.na(jcStatistic)) %>% 
+  group_by(datasetID, scalingID, scientificName) %>% 
+  summarise(nPeriods = n()) %>% 
+  ungroup() %>% 
+  filter(nPeriods >= 2) %>% 
+  group_by(datasetID, scalingID) %>% 
+  summarise(nSp = n())
+
+
+# Are they the same?
+identical(sp_logratio$nSpSac, sp_twice$nSp)
+```
+
+## Number of cells and neighbors
+
+-   Total number of neighbors per cell
+
+```{r}
+#| label: neighbor-cells-number
+#| message: false
+#| warning: false
+
+sf_use_s2(FALSE)
+
+# Calculate total number of neighbors
+nb_tbl <- richness_sf %>% 
+  select(datasetID, scalingID, siteID, geometry) %>% 
+  unique() %>% 
+  group_by(datasetID, scalingID) %>% 
+  group_modify(~ {
+    
+    group_data <- .x
+    nb_group <- poly2nb(group_data, queen = T)
+    
+    group_data$nNeighbors <- card(nb_group)
+    
+    group_data
+  }) %>% 
+  ungroup() %>% 
+  select(-geometry)
+
+nb_tbl1 <- nb_tbl %>% 
+  group_by(datasetID, scalingID, nNeighbors) %>% 
+  summarise(countNeighbors = n(), .groups = "drop")
+```
+
+-   Number of edge cells per dataset and grain size
+
+```{r}
+#| label: edge-cells-number
+#| message: false
+#| warning: false
+
+nb_tbl2 <- nb_tbl1 %>% 
+  filter(nNeighbors < 8 | nNeighbors == 9) %>% # Some EBBA cells are joined and can have a max of 10 neighbors
+  group_by(datasetID, scalingID) %>% 
+  summarise(nEdgeCells = sum(countNeighbors))
+```
+
+-   Joining with total number of cells
+
+```{r}
+#| label: neighbor-edge-cells-table
+#| message: false
+#| warning: false
+
+# total number of cells
+ncells_tbl <- richness_sf %>% 
+  st_drop_geometry() %>% 
+  select(datasetID, scalingID, siteID) %>% 
+  unique() %>% 
+  group_by(datasetID, scalingID) %>% 
+  summarise(nCells = length(siteID))
+
+
+# Joining
+out <- nb_tbl2 %>% 
+  full_join(ncells_tbl) %>% 
+  mutate(proportion = nEdgeCells / nCells)
+```
+
+-   Saving
+
+```{r}
+#| label: save-neighbor-edge-cells-table
+#| message: false
+#| warning: false
+
+write.csv(out, file.path(paths$output_path, "proportion_edge_cells.csv"))
+```
+
+## Which species are winners and losers?
+
+### Joining with taxonomy
+
+```{r}
+#| label: add-taxonomy-logratios
+#| message: false
+#| warning: false
+
+jcocc_df1 <- jcocc_df %>% 
+  left_join(taxonomy_df, by = "scientificName") %>% 
+  select(datasetID, scalingID, cellSide, order, family, genus, scientificName,
+         firstJCStat, lastJCStat, logratioJCStat,
+         firstOcc, lastOcc, logratioOcc, quadrant)
+```
+
+Winners = species that are increasing in occupancy.
+
+```{r}
+#| label: winners-logratio-occupancy
+#| message: false
+#| warning: false
+
+occ_inc <- jcocc_df1 %>% 
+  filter(logratioOcc > 0) %>% 
+  group_by(datasetID, scalingID, cellSide, family) %>% 
+  summarise(nFamily = n())
+```
+
+Losers = species that are declining in occupancy.
+
+```{r}
+#| label: losers-logratio-occupancy
+#| message: false
+#| warning: false
+
+occ_dec <- jcocc_df1 %>% 
+  filter(logratioOcc < 0) %>% 
+  group_by(datasetID, scalingID, cellSide, family) %>% 
+  summarise(nFamily = n())
+```
