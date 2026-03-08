@@ -1,0 +1,65 @@
+# R workspace files
+.Renviron
+.RData
+.Rhistory
+.Rapp.history
+autocorrelation.Rproj
+
+# RStudio temp files
+.Rproj.user/
+
+# Temporary / log files
+*.tmp
+*.log
+
+# System files
+.DS_Store
+Thumbs.db
+
+# Data folder: ignore everything except selected files
+data/input/grid_sf.rds
+data/input/species_data.rds
+data/input/taxonomy.rds
+data/output/count_time_sac_sp.csv
+data/output/dunn_habres.csv
+data/output/dunn_trores.csv
+data/output/grid_attributes_tbl.csv
+data/output/hwilm_jcd.csv
+data/output/hwilm_res.csv
+data/output/kruskal_habjcd.csv
+data/output/kruskal_habres.csv
+data/output/kruskal_trojcd.csv
+data/output/kruskal_trores.csv
+data/output/lm_grain_rich.csv
+data/output/lm_grain_sp.csv
+data/output/mean_grain_sac_sp.csv
+data/output/mean_logratios_jcocc.csv
+data/output/median_grain_sac_sp.csv
+data/output/n_models_time.csv
+data/output/occupancy_table.rds
+data/output/proportion_edge_cells.csv
+data/output/quadrant_jcocc.csv
+data/output/quadrant_jcocc_grouped.csv
+data/output/richness_period.csv
+data/output/richness_region.csv
+data/output/richness_sac_pval.csv
+data/output/richness_sf.rds
+data/output/richness_table.rds
+data/output/slopes_occ_df.csv
+data/output/slopes_time_sac_sp.csv
+data/output/slopes_time_sac_sp_all.csv
+data/output/slopes_time_sac_sp_mean.csv
+data/output/species_filtered.rds
+data/output/species_sac_pval.csv
+data/output/species_sf.rds
+data/output/summary_lm_jcocc.csv
+data/output/summary_logratio_jcocc.csv
+
+# Codes folder: track only specific scripts
+codes/00_config_file*
+codes/02_get_data*
+codes/13_individual_plots*
+
+# Output folders
+figures/
+figures_ppt/
