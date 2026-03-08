@@ -1,4 +1,5 @@
 # R workspace files
+.Renviron
 .RData
 .Rhistory
 .Rapp.history
